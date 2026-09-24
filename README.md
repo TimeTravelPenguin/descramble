@@ -22,7 +22,7 @@ cargo run --release -- restore output/shuffled.png output/restored.png --window 
 cargo run --release -- restore --help
 ```
 
-`demo` creates its output directory (default `output/demo`) and writes `original.png`, `scrambled.png`, `restored.png`, and `report.json`. For `scramble` and `restore`, the output parent directory must already exist. Outputs must use `.png`; the JSON map or search report is written beside it with the same stem. Existing output files are overwritten.
+`demo` uses `images/penguin.jpg` by default, creates its output directory (default `output/demo`), and writes `original.png`, `scrambled.png`, `restored.png`, and `report.json`. For `scramble` and `restore`, the output parent directory must already exist. Outputs must use `.png`; the JSON map or search report is written beside it with the same stem. Existing output files are replaced after all destinations have been checked and all artifacts encoded into temporary files. Outputs that alias the input or another output are rejected. Each file replacement is atomic, but the group is not a transaction if a filesystem failure or concurrent change occurs during replacement.
 
 Input supports PNG and JPEG, decoded to RGBA8. The solver measures RGB similarity and carries alpha through unchanged. It does not model alpha compositing. Save scrambled images losslessly: JPEG encoding after scrambling changes the data. Do not resize an already scrambled image because interpolation mixes unrelated strips.
 
@@ -31,7 +31,7 @@ Options shared by `demo` and `restore`:
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--window` | `max(1, floor(n / 100))` per axis | Neighborhood radius, clamped to `n - 1` |
-| `--population` | 32 | Number of candidate permutations, minimum 4 |
+| `--population` | 32 | Number of candidate permutations, minimum 6 |
 | `--generations` | 200 | Positive generation limit per axis |
 | `--local-passes` | 2 | Improvement passes per candidate; 0 disables local search |
 | `--seed` | 1 | Row search seed; column search uses seed + 1, wrapping |
@@ -56,14 +56,14 @@ The implementation proceeds as follows:
 
 1. Include the input ordering, generate nearest-neighbor paths for the rest of the first half of the population, and fill the second half with random permutations. Improve all starting candidates locally.
 2. Radiate chooses offspring with tournament selection (size 3). Preserve the best 25% as survivors; use 75% offspring, subject to integer rounding.
-3. Apply PMX crossover (rate 0.8), Radiate inversion mutation (rate 0.2), then local improvement to the offspring. These probabilities use Radiate's operator semantics.
+3. Apply Radiate PMX crossover (rate 0.8), an inclusive reversal mutation (probability 0.2 per chromosome), then local improvement to the offspring. Reversal chooses a start in `0..n-1` and an inclusive end in `start+1..n`, so every selected mutation reverses at least two items and can include the final item. The minimum population ensures Radiate receives at least four offspring, as its PMX dispatch skips smaller offspring groups.
 4. Each local pass considers reversals that bring an item's eight nearest neighbors next to it, then scans adjacent swaps. Accept the first strictly improving moves in deterministic item order. Stop early if a pass accepts nothing. This is a bounded candidate search, not exhaustive descent or Tabu Search.
 5. Write the improved permutation back into the chromosome. Radiate invalidates its cached fitness before evaluation. Improvements are inherited by descendants.
-6. Stop after the requested generations. Recheck the final population and Radiate's best result using `f64`, retaining the starting incumbent if needed. Canonicalize whole-order reversal by putting the smaller input index at the first endpoint.
+6. Stop after the requested generations. Return the best `f64` result retained across initialization and every fitness evaluation, even if Radiate later discards it as an `f32` tie. Canonicalize whole-order reversal by putting the smaller input index at the first endpoint.
 
-Adjacent-swap deltas take `O(w)` distance lookups; reversal deltas take `O(w²)` because internal pairs cancel. Applying a reversal and updating positions takes time proportional to its length. Full objective evaluation is `O(nw)`. Each local pass proposes at most eight reversals per item and `n - 1` swaps. A relative tolerance of `1e-12 * max(1, current candidate cost at entry)` avoids accepting floating-point noise; a final full-score check rolls back a local-search call if its result became worse.
+Adjacent-swap deltas take `O(w)` distance lookups; reversal deltas take `O(w²)` because internal pairs cancel. Applying a reversal and updating positions takes time proportional to its length. Full objective evaluation is `O(nw)`. Each local pass proposes at most eight reversals per item and `n - 1` swaps. Candidate construction selects the nearest eight in linear time per item, then sorts only those eight. Local search reuses its rollback/position buffers and skips all preparation when disabled. A relative tolerance of `1e-12 * current candidate cost at entry` avoids accepting floating-point noise without suppressing all improvements on small-scale data; a final full-score check rolls back a local-search call if its result became worse.
 
-Distance matrices and local search use `f64`. Radiate stores fitness as `f32`, so selection can treat very close scores as ties; fitness is scaled by a fixed bound on the objective. The returned cost is recomputed in `f64`. Seeds reproduce searches with this dependency lockfile and platform; cross-platform floating-point and future dependency behavior are not guaranteed. Only distance construction uses parallel computation; random evolutionary operations run on the caller's thread using Radiate's scoped RNG.
+Distance matrices and local search use `f64`. Euclidean distances use a scaled-norm fallback when squaring would overflow or underflow. Radiate stores fitness as `f32`, so selection can treat very close scores as ties; fitness is scaled by a fixed positive bound on the objective, including for very small distances. The separate `f64` incumbent preserves evaluated improvements, but does not change Radiate's selection precision. The returned cost is recomputed in `f64`. Seeds reproduce searches with this implementation, dependency lockfile, and platform; changes to operators, cross-platform floating-point behavior, and future dependencies can change seeded results. Only distance construction uses parallel computation; random evolutionary operations run on the caller's thread using Radiate's scoped RNG.
 
 ## Library
 
@@ -101,7 +101,8 @@ Source layout:
 - `src/objective.rs`: validated distances, weighted objective, exact move deltas.
 - `src/memetic.rs`: initialization, Radiate integration, inherited local search.
 - `src/image_ordering.rs`: RGB vector extraction, scrambling and reconstruction.
-- `src/main.rs`: commands and JSON reports.
+- `src/cli.rs`: command definitions and solver options.
+- `src/main.rs`: command execution, JSON reports, and staged output handling.
 
 ## Verification
 
@@ -111,7 +112,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-Tests compare every swap and reversal against full rescoring for every permutation and window at sizes 2 through 6; check the objective fixture; verify cached-fitness invalidation and deterministic seeds; and reconstruct a synthetic image exactly up to axis reflections. They also cover distance invariance, alpha preservation, degenerate axes, duplicate strips, and invalid inputs. Synthetic recovery is not a guarantee of exact recovery on natural images.
+Tests compare every swap and reversal against full rescoring for every permutation and window at sizes 2 through 6; check the objective fixture; verify cached-fitness invalidation and deterministic seeds; and reconstruct a synthetic image exactly up to axis reflections. They also cover distance invariance, extreme numerical scales, retained full-precision improvements, mutation endpoints, crossover population requirements, alpha preservation, degenerate axes, duplicate strips, invalid inputs, and CLI output failures/aliases. Synthetic recovery is not a guarantee of exact recovery on natural images.
 
 ## Research and dependencies
 

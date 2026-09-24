@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use radiate::prelude::*;
 use serde::Serialize;
@@ -30,9 +30,11 @@ impl Default for SolverConfig {
 
 impl SolverConfig {
     pub fn validate(&self) -> Result<()> {
-        if self.population < 4 || self.generations == 0 || self.window == Some(0) {
+        // Radiate 1.3.1 only performs crossover with more than three offspring.
+        // With a 75% offspring fraction, six is the smallest working population.
+        if self.population < 6 || self.generations == 0 || self.window == Some(0) {
             return Err(Error::InvalidInput(
-                "population must be at least 4; generations and any explicit window must be positive".into(),
+                "population must be at least 6; generations and any explicit window must be positive".into(),
             ));
         }
 
@@ -81,7 +83,7 @@ fn solve_seeded(objective: Arc<WindowObjective>, config: &SolverConfig) -> Resul
         });
     }
 
-    let local_search = LocalSearch::new(Arc::clone(&objective), config.local_passes);
+    let mut local_search = LocalSearch::new(Arc::clone(&objective), config.local_passes);
     let alleles: Arc<[usize]> = identity.clone().into();
     let mut population = Vec::with_capacity(config.population);
     let mut best_order = identity.clone();
@@ -113,6 +115,11 @@ fn solve_seeded(objective: Arc<WindowObjective>, config: &SolverConfig) -> Resul
     }
 
     let initial_best_cost = best_cost;
+    let incumbent = Arc::new(Mutex::new(Incumbent {
+        order: best_order,
+        cost: best_cost,
+    }));
+    let fitness_incumbent = Arc::clone(&incumbent);
     let fitness_objective = Arc::clone(&objective);
     let engine = GeneticEngine::builder()
         .codec(PermutationCodec::new(identity))
@@ -125,10 +132,17 @@ fn solve_seeded(objective: Arc<WindowObjective>, config: &SolverConfig) -> Resul
         .survivor_selector(EliteSelector::new())
         .alter(alters![
             PMXCrossover::new(0.8),
-            InversionMutator::new(0.2),
+            InclusiveInversion,
             local_search
         ])
-        .fitness_fn(move |order: Vec<usize>| fitness_objective.normalized_score(&order))
+        .fitness_fn(move |order: Vec<usize>| {
+            let cost = fitness_objective.score(&order);
+            fitness_incumbent
+                .lock()
+                .expect("incumbent lock poisoned")
+                .consider(&order, cost);
+            fitness_objective.normalize(cost)
+        })
         .try_build()
         .map_err(|error| Error::Evolution(error.to_string()))?;
 
@@ -138,25 +152,13 @@ fn solve_seeded(objective: Arc<WindowObjective>, config: &SolverConfig) -> Resul
         .run()
         .map_err(|error| Error::Evolution(error.to_string()))?;
 
-    // Radiate compares f32 scores. Re-evaluate the final candidates in f64 and
-    // retain the initial incumbent so rounding cannot make the returned result worse.
-    let codec = PermutationCodec::new((0..count).collect());
-    let mut candidates: Vec<Vec<usize>> = result
-        .population()
-        .iter()
-        .map(|phenotype| codec.decode(phenotype.genotype()))
-        .collect();
-
-    candidates.push(result.value().clone());
-
-    for order in candidates {
-        let cost = objective.cost(&order)?;
-
-        if cost < best_cost {
-            best_cost = cost;
-            best_order = order;
-        }
-    }
+    // Keep every evaluated improvement in f64, even if Radiate's f32 selection
+    // treats it as a tie and discards it before the final generation.
+    let mut best_order = incumbent
+        .lock()
+        .expect("incumbent lock poisoned")
+        .order
+        .clone();
 
     // Whole-order reversal is equivalent. This convention only stabilizes output orientation.
     if best_order[0] > best_order[count - 1] {
@@ -171,6 +173,48 @@ fn solve_seeded(objective: Arc<WindowObjective>, config: &SolverConfig) -> Resul
         initial_best_cost,
         generations: result.index(),
     })
+}
+
+struct Incumbent {
+    order: Vec<usize>,
+    cost: f64,
+}
+
+impl Incumbent {
+    fn consider(&mut self, order: &[usize], cost: f64) {
+        if cost < self.cost {
+            self.order.clear();
+            self.order.extend_from_slice(order);
+            self.cost = cost;
+        }
+    }
+}
+
+/// Radiate 1.3.1's built-in inversion excludes the final allele from its slice.
+/// Use inclusive endpoints and require at least two items so every mutation acts.
+struct InclusiveInversion;
+
+impl Mutate<PermutationChromosome<usize>> for InclusiveInversion {
+    fn rates(&self) -> RateSet {
+        RateSet::new(0.2)
+    }
+
+    fn mutate_chromosome(
+        &mut self,
+        chromosome: &mut PermutationChromosome<usize>,
+        ctx: &mut AlterContext,
+    ) -> usize {
+        let count = chromosome.genes.len();
+
+        if count < 2 || !random_provider::bool(ctx.rate()) {
+            return 0;
+        }
+
+        let start = random_provider::range(0..count - 1);
+        let end = random_provider::range(start + 1..count);
+        chromosome.genes[start..=end].reverse();
+        1
+    }
 }
 
 fn nearest_neighbor(distances: &DistanceMatrix, start: usize) -> Vec<usize> {
@@ -202,24 +246,32 @@ struct LocalSearch {
     objective: Arc<WindowObjective>,
     neighbors: Vec<Vec<usize>>,
     passes: usize,
+    original: Vec<usize>,
+    positions: Vec<usize>,
 }
 
 impl LocalSearch {
     fn new(objective: Arc<WindowObjective>, passes: usize) -> Self {
         let distances = objective.distances();
-        let neighbors = (0..distances.len())
+        let count = if passes == 0 { 0 } else { distances.len() };
+        let neighbors = (0..count)
             .map(|item| {
                 let mut neighbors: Vec<usize> = (0..distances.len())
                     .filter(|&other| other != item)
                     .collect();
-                neighbors.sort_unstable_by(|&left, &right| {
+                let compare = |left: &usize, right: &usize| {
                     distances
-                        .get(item, left)
-                        .total_cmp(&distances.get(item, right))
-                        .then(left.cmp(&right))
-                });
+                        .get(item, *left)
+                        .total_cmp(&distances.get(item, *right))
+                        .then(left.cmp(right))
+                };
 
-                neighbors.truncate(8);
+                if neighbors.len() > 8 {
+                    neighbors.select_nth_unstable_by(8, compare);
+                    neighbors.truncate(8);
+                }
+
+                neighbors.sort_unstable_by(compare);
                 neighbors
             })
             .collect();
@@ -228,16 +280,25 @@ impl LocalSearch {
             objective,
             neighbors,
             passes,
+            original: Vec::new(),
+            positions: Vec::new(),
         }
     }
 
     /// Bounded first-improvement search: candidate reversals then adjacent swaps.
     /// Each item proposes bringing its eight closest items next to itself.
-    fn improve(&self, order: &mut [usize]) -> usize {
-        let original = order.to_vec();
+    fn improve(&mut self, order: &mut [usize]) -> usize {
+        if self.passes == 0 {
+            return 0;
+        }
+
+        let original = &mut self.original;
+        original.clear();
+        original.extend_from_slice(order);
         let original_cost = self.objective.score(order);
-        let tolerance = 1e-12 * original_cost.max(1.0);
-        let mut positions = vec![0; order.len()];
+        let tolerance = 1e-12 * original_cost;
+        let positions = &mut self.positions;
+        positions.resize(order.len(), 0);
         let mut accepted = 0;
 
         for (position, &item) in order.iter().enumerate() {
@@ -288,7 +349,7 @@ impl LocalSearch {
 
         // Delta arithmetic can round differently from the full objective.
         if self.objective.score(order) > original_cost {
-            order.copy_from_slice(&original);
+            order.copy_from_slice(original);
             return 0;
         }
 
@@ -302,6 +363,10 @@ impl Mutate<PermutationChromosome<usize>> for LocalSearch {
         chromosome: &mut PermutationChromosome<usize>,
         _: &mut AlterContext,
     ) -> usize {
+        if self.passes == 0 {
+            return 0;
+        }
+
         let mut order: Vec<usize> = chromosome.genes.iter().map(|gene| *gene.allele()).collect();
         let accepted = self.improve(&mut order);
 
@@ -319,6 +384,123 @@ impl Mutate<PermutationChromosome<usize>> for LocalSearch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inversion_includes_final_item_and_changes_two_item_orders() {
+        random_provider::scoped_seed(7, || {
+            let alleles: Arc<[usize]> = vec![0, 1].into();
+            let genes = (0..2)
+                .map(|item| PermutationGene::new(item, Arc::clone(&alleles)))
+                .collect();
+            let mut chromosome = PermutationChromosome::new(genes, alleles);
+            let mut updates = Default::default();
+            let mut context = AlterContext::new(&mut updates, 1, 1.0, &[]);
+            assert_eq!(
+                InclusiveInversion.mutate_chromosome(&mut chromosome, &mut context),
+                1
+            );
+            assert_eq!(*chromosome.genes[0].allele(), 1);
+            assert_eq!(*chromosome.genes[1].allele(), 0);
+        });
+    }
+
+    #[test]
+    fn every_accepted_population_has_enough_offspring_for_pmx() {
+        for population in 0..=5 {
+            assert!(
+                SolverConfig {
+                    population,
+                    ..SolverConfig::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+
+        let alleles: Arc<[usize]> = (0..6).collect::<Vec<_>>().into();
+        let mut offspring: Vec<_> = (0..4)
+            .map(|offset| {
+                let genes = (0..6)
+                    .map(|item| PermutationGene::new((item + offset) % 6, Arc::clone(&alleles)))
+                    .collect();
+                Phenotype::from(Genotype::from(PermutationChromosome::new(
+                    genes,
+                    Arc::clone(&alleles),
+                )))
+            })
+            .collect();
+
+        let mut updates = Default::default();
+        let mut context = AlterContext::new(&mut updates, 1, 1.0, &[]);
+        let crossed = random_provider::scoped_seed(3, || {
+            PMXCrossover::new(1.0).crossover(&mut offspring, &mut context)
+        });
+        assert!(crossed > 0);
+        assert!(offspring.iter().all(Valid::is_valid));
+        assert!(
+            SolverConfig {
+                population: 6,
+                ..SolverConfig::default()
+            }
+            .validate()
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn incumbent_preserves_improvements_that_f32_selection_cannot_distinguish() {
+        let mut incumbent = Incumbent {
+            order: vec![0, 1, 2],
+            cost: 1.0,
+        };
+        let improved = 1.0 - 1e-10;
+        assert_eq!(incumbent.cost as f32, improved as f32);
+        incumbent.consider(&[0, 2, 1], improved);
+        incumbent.consider(&[1, 0, 2], 1.0);
+        assert_eq!(incumbent.order, vec![0, 2, 1]);
+        assert_eq!(incumbent.cost, improved);
+    }
+
+    #[test]
+    fn local_search_improves_small_scale_distances_and_can_be_disabled() {
+        let vectors: Vec<Vec<f64>> = (0..6).map(|item| vec![item as f64 * 1e-100]).collect();
+        let objective = Arc::new(
+            WindowObjective::new(DistanceMatrix::from_vectors(&vectors).unwrap(), 1).unwrap(),
+        );
+        let mut order = vec![0, 3, 1, 4, 2, 5];
+        let mut disabled = LocalSearch::new(Arc::clone(&objective), 0);
+        assert_eq!(disabled.improve(&mut order), 0);
+        assert!(disabled.neighbors.is_empty());
+        assert!(disabled.original.is_empty());
+        assert_eq!(order, vec![0, 3, 1, 4, 2, 5]);
+        let mut search = LocalSearch::new(Arc::clone(&objective), 2);
+        assert!(search.improve(&mut order) > 0);
+        assert!((objective.score(&order) / 1e-100 - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn candidate_selection_matches_full_sort_including_ties() {
+        let vectors: Vec<Vec<f64>> = (0..32).map(|item| vec![(item % 7) as f64]).collect();
+        let objective = Arc::new(
+            WindowObjective::new(DistanceMatrix::from_vectors(&vectors).unwrap(), 2).unwrap(),
+        );
+        let search = LocalSearch::new(Arc::clone(&objective), 1);
+
+        for item in 0..vectors.len() {
+            let mut expected: Vec<usize> =
+                (0..vectors.len()).filter(|&other| other != item).collect();
+            expected.sort_unstable_by(|&left, &right| {
+                objective
+                    .distances()
+                    .get(item, left)
+                    .total_cmp(&objective.distances().get(item, right))
+                    .then(left.cmp(&right))
+            });
+
+            expected.truncate(8);
+            assert_eq!(search.neighbors[item], expected);
+        }
+    }
 
     #[test]
     fn inherited_local_search_invalidates_cached_fitness() {

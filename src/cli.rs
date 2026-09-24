@@ -65,7 +65,7 @@ pub struct SolverArgs {
     #[arg(long)]
     window: Option<usize>,
 
-    /// Population size.
+    /// Population size (at least 6, so crossover has enough offspring).
     #[arg(long, default_value_t = 32)]
     population: usize,
 

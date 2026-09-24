@@ -1,4 +1,8 @@
-use std::{fs, path::Path, time::Instant};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use clap::Parser;
 use color_eyre::{
@@ -6,14 +10,17 @@ use color_eyre::{
     eyre::{Context, bail},
 };
 use descramble::{
-    cli::{Cli, Command},
-    image_ordering::{ImageOrdering, apply_order, restore, scramble},
+    cli::{Cli, Command, SolverArgs},
+    image_ordering::{ImageOrdering, Restoration, apply_order, restore, scramble},
     memetic::SolverConfig,
 };
 use image::{ImageFormat, RgbaImage};
 use serde_json::json;
+use tempfile::NamedTempFile;
 
 fn main() -> Result<()> {
+    color_eyre::install()?;
+
     match Cli::parse().command {
         Command::Scramble {
             input,
@@ -43,13 +50,27 @@ fn main() -> Result<()> {
 }
 
 fn run_demo(
-    input: std::path::PathBuf,
-    output_dir: std::path::PathBuf,
+    input: PathBuf,
+    output_dir: PathBuf,
     max_dimension: u32,
-    solver: descramble::cli::SolverArgs,
-) -> Result<(), color_eyre::eyre::Error> {
+    solver: SolverArgs,
+) -> Result<()> {
     let config = SolverConfig::from(solver);
     config.validate()?;
+    fs::create_dir_all(&output_dir)?;
+    let original_path = output_dir.join("original.png");
+    let scrambled_path = output_dir.join("scrambled.png");
+    let restored_path = output_dir.join("restored.png");
+    let report_path = output_dir.join("report.json");
+    validate_outputs(
+        &input,
+        &[
+            &original_path,
+            &scrambled_path,
+            &restored_path,
+            &report_path,
+        ],
+    )?;
 
     let original = image::open(&input)
         .with_context(|| format!("Could not read {}", input.display()))?
@@ -57,84 +78,64 @@ fn run_demo(
         .to_rgba8();
 
     let (scrambled, scramble_order) = scramble(&original, config.seed)?;
-    fs::create_dir_all(&output_dir)?;
-    save_png(&original, &output_dir.join("original.png"))?;
-    save_png(&scrambled, &output_dir.join("scrambled.png"))?;
-
-    let start = Instant::now();
-    eprintln!(
-        "Ordering {} rows and {} columns…",
-        scrambled.height(),
-        scrambled.width()
-    );
-
-    let result = restore(&scrambled, &config)?;
-    let restored = apply_order(&scrambled, &result.ordering())?;
+    let (restored, result, mut report) = run_restoration(&scrambled, &config)?;
     let recovery = adjacency_recovery(&scramble_order, &result.ordering());
 
-    print_costs(&result);
     println!(
         "Original neighbor recovery: rows {:.1}%, columns {:.1}%",
         100.0 * recovery.0,
         100.0 * recovery.1
     );
 
-    save_png(&restored, &output_dir.join("restored.png"))?;
-    save_json(
-        &output_dir.join("report.json"),
-        &json!({
-            "config": config,
-            "width": original.width(),
-            "height": original.height(),
-            "elapsed_seconds": start.elapsed().as_secs_f64(),
-            "restoration": result,
-            "scramble_order": scramble_order,
-            "row_adjacency_recovery": recovery.0,
-            "column_adjacency_recovery": recovery.1,
-        }),
-    )?;
+    report["scramble_order"] = serde_json::to_value(scramble_order)?;
+    report["row_adjacency_recovery"] = json!(recovery.0);
+    report["column_adjacency_recovery"] = json!(recovery.1);
+    commit_outputs(vec![
+        stage_png(&original, &original_path)?,
+        stage_png(&scrambled, &scrambled_path)?,
+        stage_png(&restored, &restored_path)?,
+        stage_json(&report, &report_path)?,
+    ])?;
 
     println!("Saved demo to {}", output_dir.display());
 
     Ok(())
 }
 
-fn run_restore(
-    input: std::path::PathBuf,
-    output: std::path::PathBuf,
-    solver: descramble::cli::SolverArgs,
-) -> Result<(), color_eyre::eyre::Error> {
+fn run_restore(input: PathBuf, output: PathBuf, solver: SolverArgs) -> Result<()> {
     check_png(&output)?;
 
     let config = SolverConfig::from(solver);
     config.validate()?;
+    let report_path = output.with_extension("json");
+    validate_outputs(&input, &[&output, &report_path])?;
 
     let image = read_image(&input)?;
-    let (restored, report) = run_restoration(&image, &config)?;
+    let (restored, _, report) = run_restoration(&image, &config)?;
 
-    save_png(&restored, &output)?;
-    save_json(&output.with_extension("json"), &report)?;
+    commit_outputs(vec![
+        stage_png(&restored, &output)?,
+        stage_json(&report, &report_path)?,
+    ])?;
 
     println!("Saved {} and its search report", output.display());
 
     Ok(())
 }
 
-fn run_scramble(
-    input: std::path::PathBuf,
-    output: std::path::PathBuf,
-    seed: u64,
-) -> Result<(), color_eyre::eyre::Error> {
+fn run_scramble(input: PathBuf, output: PathBuf, seed: u64) -> Result<()> {
     check_png(&output)?;
+    let report_path = output.with_extension("json");
+    validate_outputs(&input, &[&output, &report_path])?;
 
     let image = read_image(&input)?;
     let (scrambled, ordering) = scramble(&image, seed)?;
 
-    save_png(&scrambled, &output)?;
-    save_json(
-        &output.with_extension("json"),
-        &json!({ "seed": seed, "ordering": ordering }),
-    )?;
+    let report = json!({ "seed": seed, "ordering": ordering });
+    commit_outputs(vec![
+        stage_png(&scrambled, &output)?,
+        stage_json(&report, &report_path)?,
+    ])?;
 
     println!("Saved {} and its permutation map", output.display());
 
@@ -144,7 +145,7 @@ fn run_scramble(
 fn run_restoration(
     image: &RgbaImage,
     config: &SolverConfig,
-) -> Result<(RgbaImage, serde_json::Value)> {
+) -> Result<(RgbaImage, Restoration, serde_json::Value)> {
     eprintln!(
         "Ordering {} rows and {} columns…",
         image.height(),
@@ -165,10 +166,10 @@ fn run_restoration(
         "restoration": result,
     });
 
-    Ok((restored, report))
+    Ok((restored, result, report))
 }
 
-fn print_costs(result: &descramble::image_ordering::Restoration) {
+fn print_costs(result: &Restoration) {
     for (name, axis) in [("Rows", &result.rows), ("Columns", &result.columns)] {
         println!(
             "{name}: cost {:.3} → {:.3}, window {}, {} generations",
@@ -215,13 +216,116 @@ fn check_png(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn save_png(image: &RgbaImage, path: &Path) -> Result<()> {
-    image
-        .save_with_format(path, ImageFormat::Png)
-        .with_context(|| format!("Could not save {}", path.display()))
+/// Fail before searching or replacing any artifact if a destination is unusable.
+fn validate_outputs(input: &Path, outputs: &[&Path]) -> Result<()> {
+    let input =
+        fs::canonicalize(input).with_context(|| format!("Could not read {}", input.display()))?;
+    let mut existing = vec![input];
+
+    for &output in outputs {
+        let parent = output
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+
+        if !parent.is_dir() {
+            bail!("Output directory does not exist: {}", parent.display());
+        }
+
+        match fs::metadata(output) {
+            Ok(metadata) => {
+                if !metadata.is_file() {
+                    bail!("Output is not a regular file: {}", output.display());
+                }
+
+                let resolved = fs::canonicalize(output)?;
+
+                for other in &existing {
+                    if same_file(&resolved, other)? {
+                        bail!(
+                            "Output aliases the input or another output: {}",
+                            output.display()
+                        );
+                    }
+                }
+
+                existing.push(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Could not inspect {}", output.display()));
+            }
+        }
+    }
+
+    Ok(())
 }
 
-fn save_json(path: &Path, report: &serde_json::Value) -> Result<()> {
-    fs::write(path, serde_json::to_string_pretty(report)?)
-        .with_context(|| format!("Could not save {}", path.display()))
+fn same_file(left: &Path, right: &Path) -> Result<bool> {
+    if left == right {
+        return Ok(true);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let left = fs::metadata(left)?;
+        let right = fs::metadata(right)?;
+        Ok(left.dev() == right.dev() && left.ino() == right.ino())
+    }
+
+    #[cfg(not(unix))]
+    Ok(false)
+}
+
+struct PendingOutput {
+    path: PathBuf,
+    file: NamedTempFile,
+}
+
+impl PendingOutput {
+    fn new(path: &Path) -> Result<Self> {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let file = NamedTempFile::new_in(parent)
+            .with_context(|| format!("Could not prepare {}", path.display()))?;
+
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+        })
+    }
+}
+
+fn stage_png(image: &RgbaImage, path: &Path) -> Result<PendingOutput> {
+    let mut pending = PendingOutput::new(path)?;
+    image
+        .write_to(&mut pending.file, ImageFormat::Png)
+        .with_context(|| format!("Could not encode {}", path.display()))?;
+
+    Ok(pending)
+}
+
+fn stage_json(report: &serde_json::Value, path: &Path) -> Result<PendingOutput> {
+    let mut pending = PendingOutput::new(path)?;
+    serde_json::to_writer_pretty(&mut pending.file, report)
+        .with_context(|| format!("Could not encode {}", path.display()))?;
+
+    Ok(pending)
+}
+
+fn commit_outputs(outputs: Vec<PendingOutput>) -> Result<()> {
+    // All encoding must succeed before replacing any output. Each rename is atomic,
+    // but the group is not a transaction if the filesystem changes during commit.
+    for output in outputs {
+        output
+            .file
+            .persist(&output.path)
+            .with_context(|| format!("Could not save {}", output.path.display()))?;
+    }
+
+    Ok(())
 }

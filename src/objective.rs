@@ -63,12 +63,23 @@ impl DistanceMatrix {
             .enumerate()
             .for_each(|(row, distances)| {
                 for column in row + 1..count {
-                    distances[column] = vectors[row]
+                    let squared_distance = vectors[row]
                         .iter()
                         .zip(&vectors[column])
                         .map(|(left, right)| (left - right).powi(2))
-                        .sum::<f64>()
-                        .sqrt();
+                        .sum::<f64>();
+
+                    distances[column] =
+                        if squared_distance.is_finite() && squared_distance >= f64::MIN_POSITIVE {
+                            squared_distance.sqrt()
+                        } else {
+                            // Keep the ordinary fast path for image data. Scaled hypot
+                            // avoids squaring overflow/underflow for general vectors.
+                            vectors[row]
+                                .iter()
+                                .zip(&vectors[column])
+                                .fold(0.0_f64, |norm, (left, right)| norm.hypot(left - right))
+                        };
                 }
             });
 
@@ -117,7 +128,8 @@ impl WindowObjective {
             .map(|gap| (window + 1 - gap) as f64 * (distances.len() - gap) as f64)
             .sum();
 
-        let scale = (max_distance * weight_sum).max(1.0);
+        let bound = max_distance * weight_sum;
+        let scale = if bound > 0.0 { bound } else { 1.0 };
 
         if !scale.is_finite() {
             return Err(Error::InvalidInput(
@@ -145,8 +157,8 @@ impl WindowObjective {
         Ok(self.score(order))
     }
 
-    pub(crate) fn normalized_score(&self, order: &[usize]) -> f64 {
-        self.score(order) / self.scale
+    pub(crate) fn normalize(&self, cost: f64) -> f64 {
+        cost / self.scale
     }
 
     pub(crate) fn score(&self, order: &[usize]) -> f64 {
@@ -302,5 +314,29 @@ mod tests {
         assert!(
             WindowObjective::new(DistanceMatrix::from_dense(1, vec![0.0]).unwrap(), 0).is_err()
         );
+    }
+
+    #[test]
+    fn euclidean_norm_handles_small_and_large_finite_vectors() {
+        for scale in [1e-200, 1e-160, 1.0, 1e200] {
+            let distances =
+                DistanceMatrix::from_vectors(&[vec![0.0, 0.0], vec![3.0 * scale, 4.0 * scale]])
+                    .unwrap();
+
+            assert!((distances.get(0, 1) / scale - 5.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn normalized_fitness_is_independent_of_distance_scale() {
+        for scale in [1e-200, 1e-20, 1.0, 1e200] {
+            let vectors: Vec<Vec<f64>> = (0..4).map(|item| vec![item as f64 * scale]).collect();
+            let objective =
+                WindowObjective::new(DistanceMatrix::from_vectors(&vectors).unwrap(), 1).unwrap();
+            let ordered = objective.normalize(objective.score(&[0, 1, 2, 3])) as f32;
+            let shuffled = objective.normalize(objective.score(&[0, 2, 1, 3])) as f32;
+            assert!((ordered - 1.0 / 3.0).abs() < 1e-6);
+            assert!(ordered < shuffled);
+        }
     }
 }
