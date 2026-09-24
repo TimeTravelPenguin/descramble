@@ -2,15 +2,34 @@
 name = "descramble"
 version = "0.1.0"
 edition = "2024"
+default-run = "descramble"
+
+[[bin]]
+name = "descramble-gui"
+path = "src/bin/descramble-gui.rs"
+required-features = ["gui"]
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
 color-eyre = "0.6.5"
+iced = {
+  version = "0.14.0",
+  default-features = false,
+  features = ["crisp", "image-without-codecs", "tiny-skia", "tokio", "wayland", "x11"],
+  optional = true,
+}
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 radiate = "=1.3.1"
 rand = "0.10.3"
 rayon = "1.12.0"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = "1.0.151"
 tempfile = "3.27.0"
-thiserror = "2.0.20"
+thiserror = "2.0.21"
+tokio = { version = "1.53.1", features = ["rt-multi-thread"], optional = true }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[features]
+default = ["gui"]
+gui = ["dep:iced", "dep:tokio"]

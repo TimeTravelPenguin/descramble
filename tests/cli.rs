@@ -14,6 +14,7 @@ fn run(args: &[&str]) -> Output {
         .args(args)
         .env("NO_COLOR", "1")
         .env("RUST_BACKTRACE", "0")
+        .env("RUST_LOG", "off")
         .output()
         .unwrap()
 }
@@ -177,4 +178,46 @@ fn demo_checks_every_destination_before_replacing_outputs() {
     );
     assert!(!output.join("scrambled.png").exists());
     assert!(!output.join("restored.png").exists());
+}
+
+#[test]
+fn logging_uses_stderr_and_respects_environment_filters() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = fixture(&directory);
+    let output = directory.path().join("logged.png");
+    let result = Command::new(env!("CARGO_BIN_EXE_descramble"))
+        .args(["scramble", path(&input), path(&output)])
+        .env("RUST_LOG", "descramble=debug")
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+
+    assert!(result.status.success());
+    let stderr = String::from_utf8(result.stderr).unwrap();
+    let stdout = String::from_utf8(result.stdout).unwrap();
+    assert!(stderr.contains("Loading image"));
+    assert!(stderr.contains("Image scrambled"));
+    assert!(!stderr.contains('\u{1b}'));
+    assert!(stdout.contains("Saved"));
+    assert!(!stdout.contains("Image scrambled"));
+    let quiet = run(&["scramble", path(&input), path(&output)]);
+    assert!(quiet.status.success());
+    assert!(quiet.stderr.is_empty());
+}
+
+#[test]
+fn malformed_logging_filter_reports_error_before_writing_outputs() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = fixture(&directory);
+    let output = directory.path().join("invalid-log.png");
+    let result = Command::new(env!("CARGO_BIN_EXE_descramble"))
+        .args(["scramble", path(&input), path(&output)])
+        .env("RUST_LOG", "descramble=not-a-level")
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("Invalid RUST_LOG filter"));
+    assert!(!output.exists());
 }

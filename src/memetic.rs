@@ -61,6 +61,15 @@ pub fn solve(distances: DistanceMatrix, config: &SolverConfig) -> Result<Orderin
     let count = distances.len();
     let window = config.window.unwrap_or((count / 100).max(1));
     let objective = Arc::new(WindowObjective::new(distances, window)?);
+    tracing::debug!(
+        items = count,
+        window = objective.window(),
+        population = config.population,
+        generations = config.generations,
+        local_passes = config.local_passes,
+        seed = config.seed,
+        "Starting ordering search"
+    );
 
     // Radiate's global seed() does not reset an already initialized thread-local RNG.
     // scoped_seed() resets that actual stream, including for repeated calls on one thread.
@@ -115,6 +124,7 @@ fn solve_seeded(objective: Arc<WindowObjective>, config: &SolverConfig) -> Resul
     }
 
     let initial_best_cost = best_cost;
+    tracing::debug!(initial_best_cost, input_cost, "Initial population prepared");
     let incumbent = Arc::new(Mutex::new(Incumbent {
         order: best_order,
         cost: best_cost,
@@ -164,6 +174,13 @@ fn solve_seeded(objective: Arc<WindowObjective>, config: &SolverConfig) -> Resul
     if best_order[0] > best_order[count - 1] {
         best_order.reverse();
     }
+
+    tracing::debug!(
+        cost = objective.score(&best_order),
+        initial_best_cost,
+        generations = result.index(),
+        "Ordering search finished"
+    );
 
     Ok(OrderingResult {
         cost: objective.score(&best_order),

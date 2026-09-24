@@ -67,11 +67,13 @@ pub fn distances(image: &RgbaImage, axis: Axis) -> Result<DistanceMatrix> {
 
 pub fn restore(image: &RgbaImage, config: &SolverConfig) -> Result<Restoration> {
     config.validate()?;
+    tracing::debug!(items = image.height(), "Ordering rows");
     let rows = solve(distances(image, Axis::Rows)?, config)?;
     let column_config = SolverConfig {
         seed: config.seed.wrapping_add(1),
         ..config.clone()
     };
+    tracing::debug!(items = image.width(), "Ordering columns");
     let columns = solve(distances(image, Axis::Columns)?, &column_config)?;
 
     Ok(Restoration { rows, columns })
