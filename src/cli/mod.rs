@@ -44,7 +44,7 @@ fn run_demo(
     let scrambled_path = output_dir.join("scrambled.png");
     let restored_path = output_dir.join("restored.png");
     let report_path = output_dir.join("report.json");
-    
+
     storage::validate_outputs(
         &input,
         &[
@@ -57,7 +57,7 @@ fn run_demo(
 
     let original = storage::read_thumbnail(&input, max_dimension)?;
     let demo = application::run_demo(&original, &config)?;
-    
+
     print_costs(&demo.report.run.restoration);
     println!(
         "Original neighbor recovery: rows {:.1}%, columns {:.1}%",
@@ -78,16 +78,16 @@ fn run_demo(
 
 fn run_restore(input: PathBuf, output: PathBuf, solver: SolverArgs) -> Result<()> {
     storage::check_png(&output)?;
-    
+
     let config = SolverConfig::from(solver);
     config.validate()?;
-    
+
     let report_path = output.with_extension("json");
     storage::validate_outputs(&input, &[&output, &report_path])?;
 
     let image = storage::read_image(&input)?;
     let result = application::run_restoration(&image, &config)?;
-    
+
     print_costs(&result.report.restoration);
     storage::commit_outputs(vec![
         storage::stage_png(&result.image, &output)?,
@@ -100,13 +100,13 @@ fn run_restore(input: PathBuf, output: PathBuf, solver: SolverArgs) -> Result<()
 
 fn run_scramble(input: PathBuf, output: PathBuf, seed: u64) -> Result<()> {
     storage::check_png(&output)?;
-    
+
     let report_path = output.with_extension("json");
     storage::validate_outputs(&input, &[&output, &report_path])?;
-    
+
     let image = storage::read_image(&input)?;
     let result = application::run_scramble(&image, seed)?;
-    
+
     storage::commit_outputs(vec![
         storage::stage_png(&result.image, &output)?,
         storage::stage_json(&result.report, &report_path)?,

@@ -5,5 +5,6 @@ use descramble::{cli, logging};
 fn main() -> Result<()> {
     color_eyre::install()?;
     logging::init()?;
+
     cli::run(cli::Cli::parse().command)
 }
