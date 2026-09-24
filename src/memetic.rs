@@ -23,7 +23,7 @@ impl Default for SolverConfig {
             population: 32,
             generations: 200,
             local_passes: 2,
-            seed: 1,
+            seed: 42,
         }
     }
 }

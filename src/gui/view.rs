@@ -7,10 +7,12 @@ use super::app::{App, Message, Status};
 
 pub(super) fn view(app: &App) -> Element<'_, Message> {
     let mut input = text_input("Path to a PNG or JPEG image", &app.input_path).padding(10);
+    let mut open = button("Browse…").padding([10, 18]);
     let mut run = button("Run demo").padding([10, 18]);
 
     if !app.is_running() {
         input = input.on_input(Message::InputChanged);
+        open = open.on_press(Message::OpenFileDialog);
 
         if !app.input_path.trim().is_empty() {
             run = run.on_press(Message::RunDemo);
@@ -28,7 +30,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         text("Descramble").size(32),
         text("Explore how similarities between rows and columns can restore a shuffled image."),
         text("Image path").size(14),
-        row![input, run].spacing(12),
+        row![input, open, run].spacing(12),
         text("The demo makes a copy up to 256 pixels across before shuffling."),
         text(status),
     ]
@@ -55,11 +57,8 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
             .push(text("A restored image may be reflected or contain similar-looking strips in a different order."));
     }
 
-    container(scrollable(content))
-        .padding(24)
-        .width(Fill)
-        .height(Fill)
-        .into()
+    let body = container(content).padding(24).width(Fill).height(Fill);
+    scrollable(body).into()
 }
 
 fn image_card<'a>(title: &'a str, handle: &image::Handle) -> Element<'a, Message> {

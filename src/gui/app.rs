@@ -1,7 +1,11 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use iced::{Task, widget::image::Handle};
 use image::RgbaImage;
+use tracing::info;
 
 use crate::{application::DemoRun, memetic::SolverConfig};
 
@@ -28,6 +32,8 @@ impl Default for App {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     InputChanged(String),
+    OpenFileDialog,
+    FileDialogResult(Option<PathBuf>),
     RunDemo,
     DemoFinished(Result<Arc<DemoRun>, String>),
 }
@@ -73,6 +79,36 @@ impl App {
                 self.status = Status::Ready;
                 self.preview = None;
             }
+
+            Message::OpenFileDialog if !self.is_running() => {
+                info!("Opening file dialog");
+                return iced::Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Select and image...")
+                            .set_directory(
+                                std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                            )
+                            .add_filter("Image files", &["png", "jpg", "jpeg"])
+                            .pick_file()
+                            .await
+                            .map(|file| file.path().to_path_buf())
+                    },
+                    Message::FileDialogResult,
+                );
+            }
+
+            Message::FileDialogResult(Some(path)) if !self.is_running() => {
+                info!(path = %path.display(), "File selected");
+                self.input_path = path.to_string_lossy().to_string();
+                self.status = Status::Ready;
+                self.preview = None;
+            }
+
+            Message::FileDialogResult(None) if !self.is_running() => {
+                info!("File selection canceled");
+            }
+
             Message::RunDemo if !self.is_running() => {
                 if self.input_path.trim().is_empty() {
                     self.status = Status::Failed("Enter an image path to begin.".into());
@@ -119,7 +155,10 @@ impl App {
                     self.status = Status::Failed(error);
                 }
             },
-            Message::InputChanged(_) | Message::RunDemo => {}
+            Message::InputChanged(_)
+            | Message::RunDemo
+            | Message::OpenFileDialog
+            | Message::FileDialogResult(_) => {}
         }
 
         Task::none()
