@@ -1,18 +1,20 @@
 use std::{
     path::{Path, PathBuf},
+    str::FromStr,
     sync::Arc,
 };
 
 use iced::{Task, widget::image::Handle};
 use image::RgbaImage;
+use num::Integer;
 use tracing::info;
 
-use crate::{application::DemoRun, memetic::SolverConfig};
+use crate::{application::DemoRun, gui::controls_state::ValidatedBinding, memetic::SolverConfig};
 
-const PREVIEW_SIZE: u32 = 256;
+const INITIAL_PREVIEW_SIZE: u32 = 256;
 
 pub(super) struct App {
-    pub input_path: String,
+    pub controls: AppControlsState,
     pub status: Status,
     pub preview: Option<Preview>,
     config: SolverConfig,
@@ -21,10 +23,26 @@ pub(super) struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
-            input_path: "images/penguin.jpg".into(),
+            controls: AppControlsState::default(),
             status: Status::Ready,
             preview: None,
             config: SolverConfig::default(),
+        }
+    }
+}
+
+pub(super) struct AppControlsState {
+    pub input_path: String,
+    pub preview_size: ValidatedBinding<u32, String>,
+    pub rng_seed: ValidatedBinding<u64, String>,
+}
+
+impl Default for AppControlsState {
+    fn default() -> Self {
+        Self {
+            input_path: "images/penguin.jpg".into(),
+            preview_size: ValidatedBinding::new(INITIAL_PREVIEW_SIZE, validate),
+            rng_seed: ValidatedBinding::new(42, validate),
         }
     }
 }
@@ -36,6 +54,8 @@ pub(super) enum Message {
     FileDialogResult(Option<PathBuf>),
     RunDemo,
     DemoFinished(Result<Arc<DemoRun>, String>),
+    PreviewSizeChanged(String),
+    RngSeedChanged(String),
 }
 
 pub(super) enum Status {
@@ -75,7 +95,7 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::InputChanged(path) if !self.is_running() => {
-                self.input_path = path;
+                self.controls.input_path = path;
                 self.status = Status::Ready;
                 self.preview = None;
             }
@@ -100,7 +120,7 @@ impl App {
 
             Message::FileDialogResult(Some(path)) if !self.is_running() => {
                 info!(path = %path.display(), "File selected");
-                self.input_path = path.to_string_lossy().to_string();
+                self.controls.input_path = path.to_string_lossy().to_string();
                 self.status = Status::Ready;
                 self.preview = None;
             }
@@ -110,7 +130,7 @@ impl App {
             }
 
             Message::RunDemo if !self.is_running() => {
-                if self.input_path.trim().is_empty() {
+                if self.controls.input_path.trim().is_empty() {
                     self.status = Status::Failed("Enter an image path to begin.".into());
 
                     return Task::none();
@@ -118,8 +138,9 @@ impl App {
 
                 self.status = Status::Running;
                 self.preview = None;
-                let input_path = self.input_path.clone();
+                let input_path = self.controls.input_path.clone();
                 let config = self.config.clone();
+                let preview_size = *self.controls.preview_size.get_validated();
 
                 return Task::perform(
                     async move {
@@ -130,7 +151,7 @@ impl App {
                             tracing::info_span!("gui_demo", input = %input_path).in_scope(|| {
                                 let original = crate::storage::read_thumbnail(
                                     Path::new(&input_path),
-                                    PREVIEW_SIZE,
+                                    preview_size,
                                 )
                                 .map_err(|error| format!("{error:#}"))?;
 
@@ -145,6 +166,7 @@ impl App {
                     Message::DemoFinished,
                 );
             }
+
             Message::DemoFinished(result) => match result {
                 Ok(result) => {
                     self.preview = Some(Preview::new(result));
@@ -155,6 +177,17 @@ impl App {
                     self.status = Status::Failed(error);
                 }
             },
+
+            Message::PreviewSizeChanged(size) => {
+                self.controls.preview_size.update(&size).ok();
+            }
+
+            Message::RngSeedChanged(seed) => {
+                if let Ok(seed) = self.controls.rng_seed.update(&seed) {
+                    self.config.seed = seed;
+                }
+            }
+
             Message::InputChanged(_)
             | Message::RunDemo
             | Message::OpenFileDialog
@@ -165,35 +198,57 @@ impl App {
     }
 }
 
+fn validate<T: Integer + FromStr>(value: &str) -> Result<T, String> {
+    value
+        .parse::<T>()
+        .map_err(|_| "Preview size must be a positive integer".into())
+        .and_then(|size| {
+            if size == T::zero() {
+                Err("Preview size must be greater than zero".into())
+            } else {
+                Ok(size)
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{App, Message, Status};
+    use super::{App, AppControlsState, Message, Status};
 
     #[test]
     fn running_job_rejects_duplicate_requests_and_input_changes() {
         let mut app = App::default();
         let _task = app.update(Message::RunDemo);
+
         assert!(app.is_running());
+
         let _duplicate = app.update(Message::RunDemo);
         let _edit = app.update(Message::InputChanged("different.png".into()));
+
         assert!(app.is_running());
-        assert_eq!(app.input_path, "images/penguin.jpg");
+        assert_eq!(app.controls.input_path, "images/penguin.jpg");
     }
 
     #[test]
     fn empty_input_is_rejected_and_failure_allows_retry() {
         let mut app = App {
-            input_path: " ".into(),
+            controls: AppControlsState {
+                input_path: " ".into(),
+                ..AppControlsState::default()
+            },
             ..App::default()
         };
 
         let _task = app.update(Message::RunDemo);
         assert!(matches!(app.status, Status::Failed(_)));
+
         let _edit = app.update(Message::InputChanged("input.png".into()));
         let _task = app.update(Message::RunDemo);
         assert!(app.is_running());
+
         let _completion = app.update(Message::DemoFinished(Err("Could not read image".into())));
         assert!(matches!(app.status, Status::Failed(_)));
+
         let _retry = app.update(Message::RunDemo);
         assert!(app.is_running());
     }
