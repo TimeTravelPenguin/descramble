@@ -67,11 +67,20 @@ pub fn distances(image: &RgbaImage, axis: Axis) -> Result<DistanceMatrix> {
 }
 
 pub fn restore(image: &RgbaImage, config: &SolverConfig) -> Result<Restoration> {
+    restore_with(image, config, |matrix, config, _axis| solve(matrix, config))
+}
+
+/// Share axis sequencing and seeds while allowing an interface to observe each search.
+pub(crate) fn restore_with(
+    image: &RgbaImage,
+    config: &SolverConfig,
+    mut solve_axis: impl FnMut(DistanceMatrix, &SolverConfig, Axis) -> Result<OrderingResult>,
+) -> Result<Restoration> {
     config.validate()?;
 
     tracing::debug!(items = image.height(), "Ordering rows");
 
-    let rows = solve(distances(image, Axis::Rows)?, config)?;
+    let rows = solve_axis(distances(image, Axis::Rows)?, config, Axis::Rows)?;
     let column_config = SolverConfig {
         seed: config.seed.wrapping_add(1),
         ..config.clone()
@@ -79,7 +88,11 @@ pub fn restore(image: &RgbaImage, config: &SolverConfig) -> Result<Restoration> 
 
     tracing::debug!(items = image.width(), "Ordering columns");
 
-    let columns = solve(distances(image, Axis::Columns)?, &column_config)?;
+    let columns = solve_axis(
+        distances(image, Axis::Columns)?,
+        &column_config,
+        Axis::Columns,
+    )?;
 
     Ok(Restoration { rows, columns })
 }

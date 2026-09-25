@@ -16,20 +16,36 @@ Use release builds for searches:
 
 ```sh
 # Complete experiment using the included image; resize only before scrambling.
-cargo run --release -- demo
+cargo run --release -- experiment
 
 # A smaller experiment.
-cargo run --release -- demo images/penguin_small.jpg --max-dimension 128 --generations 60
+cargo run --release -- experiment images/penguin_small.jpg --max-dimension 128 --generations 60
 
 # Independent commands; restore never reads the original or scramble map.
 cargo run --release -- scramble images/penguin_small.jpg output/shuffled.png --seed 42
 cargo run --release -- restore output/shuffled.png output/restored.png --window 2 --seed 42
 
 cargo run --release -- restore --help
+
+# Interactive image selection, solver controls, and progress display.
+cargo run --release --bin descramble-gui
 ```
 
-`demo` uses `images/penguin.jpg` by default, creates its output directory (default
-`output/demo`), and writes `original.png`, `scrambled.png`, `restored.png`, and
+The GUI runs the search on a blocking worker and receives the latest progress value
+through a Tokio `watch` channel. Progress counts completed generations: row ordering
+uses the first half of the bar and column ordering uses the second half. Image loading,
+distance computation, and population initialization are not timed, so the bar can pause
+during those stages. The completed result arrives separately from progress updates.
+Use `--no-default-features` for CLI-only builds.
+
+The public solver and application functions remain synchronous and take no progress
+callback. Internally, `with_seeded_search` prepares the engine and lets the GUI attach
+an observer before running it, all within the same thread-local seed scope. The GUI's
+`worker.rs` owns the Radiate subscription, watch channel, and Iced event stream; shared
+application code still handles reconstruction and reports for both interfaces.
+
+`experiment` uses `images/penguin.jpg` by default, creates its output directory (default
+`output/experiment`), and writes `original.png`, `scrambled.png`, `restored.png`, and
 `report.json`. For `scramble` and `restore`, the output parent directory must already
 exist. Outputs must use `.png`; the JSON map or search report is written beside it with
 the same stem. Existing output files are replaced after all destinations have been checked
@@ -42,7 +58,7 @@ carries alpha through unchanged. It does not model alpha compositing. Save scram
 images losslessly: JPEG encoding after scrambling changes the data. Do not resize an
 already scrambled image because interpolation mixes unrelated strips.
 
-Options shared by `demo` and `restore`:
+Options shared by `experiment` and `restore`:
 
 | Option           | Default                           | Meaning                                                   |
 | ---------------- | --------------------------------- | --------------------------------------------------------- |
@@ -52,7 +68,7 @@ Options shared by `demo` and `restore`:
 | `--local-passes` | 2                                 | Improvement passes per candidate; 0 disables local search |
 | `--seed`         | 1                                 | Row search seed; column search uses seed + 1, wrapping    |
 
-`demo` additionally accepts `--output-dir` and `--max-dimension` (default 256). It reports
+`experiment` additionally accepts `--output-dir` and `--max-dimension` (default 256). It reports
 the fraction of original adjacent pairs recovered, ignoring direction. Ground truth is
 used only for this final evaluation. The score measures neighbor recovery, not exact pixel
 reconstruction or orientation.
@@ -160,7 +176,7 @@ has no face or image semantics.
 
 For an `H × W` image, distance construction is `O(H²W + W²H)` for fixed RGB channels. Each
 axis holds a dense `f64` matrix, requiring `8n²` bytes, plus feature vectors, candidates,
-and local-search data. Axes are processed sequentially. Start with the small demo before
+and local-search data. Axes are processed sequentially. Start with the small experiment before
 running a large image; the search is heuristic and has no guarantee of finding the global
 optimum.
 
@@ -169,8 +185,12 @@ Source layout:
 - `src/objective.rs`: validated distances, weighted objective, exact move deltas.
 - `src/memetic.rs`: initialization, Radiate integration, inherited local search.
 - `src/image_ordering.rs`: RGB vector extraction, scrambling and reconstruction.
-- `src/cli.rs`: command definitions and solver options.
-- `src/main.rs`: command execution, JSON reports, and staged output handling.
+- `src/application/`: shared workflows and serializable reports.
+- `src/cli/`: command definitions, solver options, and CLI dispatch.
+- `src/gui/`: Iced state, controls, rendering, and worker progress updates.
+- `src/storage.rs`: image loading, destination checks, and staged output handling.
+- `src/logging.rs`: tracing setup and `RUST_LOG` filtering.
+- `src/main.rs` and `src/bin/descramble-gui.rs`: CLI and GUI entry points.
 
 ## Verification
 
@@ -198,7 +218,7 @@ Read these in order for the original algorithm family:
 3. [Cotta, Langston and Moscato, Combinatorial and Algorithmic Issues for Microarray Analysis][cotta2005], especially §§4–5.
 4. [Moscato, Mendes and Berretta (2007), Benchmarking a memetic algorithm for ordering microarray data][moscato2007]. Only its abstract was available during this implementation; no exact 2007 reproduction is claimed.
 
-The face demonstration is on PDF pages 25–26 of [Moscato's 2015 lecture](https://carmamaths.org/meetings/mathsandcomputation/pdfs/mathscomp2015-moscato.pdf). See also [Radiate's documentation](https://docs.rs/radiate/1.3.1/radiate/).
+The face reconstruction example is on PDF pages 25–26 of [Moscato's 2015 lecture](https://carmamaths.org/meetings/mathsandcomputation/pdfs/mathscomp2015-moscato.pdf). See also [Radiate's documentation](https://docs.rs/radiate/1.3.1/radiate/).
 
 [cotta2003]: https://carloscotta.com/papers/evobio03microarray.pdf
 [mendes2005]: https://carloscotta.com/papers/icpp05memetic.pdf

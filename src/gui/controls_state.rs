@@ -7,7 +7,6 @@ where
     raw_value: String,
     validated_value: T,
     is_valid: bool,
-    only_update_on_valid: bool,
     validator: Box<ValidatorFn<T, E>>,
 }
 
@@ -26,14 +25,8 @@ where
             raw_value,
             validated_value,
             is_valid: true,
-            only_update_on_valid: false,
             validator: Box::new(validator),
         }
-    }
-
-    pub fn only_update_raw_on_valid(mut self, only_update_on_valid: bool) -> Self {
-        self.only_update_on_valid = only_update_on_valid;
-        self
     }
 
     pub fn update(&mut self, new_value: &str) -> Result<T, E> {
@@ -45,23 +38,10 @@ where
             Err(e) => Err(e),
         };
 
-        if result.is_ok() || !self.only_update_on_valid {
-            self.raw_value = new_value.to_string();
-        }
-
+        self.raw_value = new_value.to_string();
         self.is_valid = result.is_ok();
 
         result
-    }
-
-    pub fn set(mut self, new_value: T) -> Result<Self, E> {
-        let raw_value = new_value.to_string();
-
-        self.raw_value = raw_value;
-        self.validated_value = new_value;
-        self.is_valid = true;
-
-        Ok(self)
     }
 
     pub fn get_raw(&self) -> &str {

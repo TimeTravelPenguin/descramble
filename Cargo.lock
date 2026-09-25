@@ -902,7 +902,6 @@ dependencies = [
  "color-eyre",
  "iced",
  "image",
- "num",
  "radiate",
  "rand",
  "rayon",
@@ -2135,58 +2134,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "num"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35bd024e8b2ff75562e5f34e7f4905839deb4b22955ef5e73d2fea1b9813cb23"
-dependencies = [
- "num-bigint",
- "num-complex",
- "num-integer",
- "num-iter",
- "num-rational",
- "num-traits",
-]
-
-[[package]]
-name = "num-bigint"
-version = "0.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
-dependencies = [
- "num-integer",
- "num-traits",
-]
-
-[[package]]
-name = "num-complex"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
-name = "num-integer"
-version = "0.1.47"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
-name = "num-iter"
-version = "0.1.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c92800bd69a1eac91786bcfe9da64a897eb72911b8dc3095decbd07429e8048b"
-dependencies = [
- "num-integer",
- "num-traits",
-]
-
-[[package]]
 name = "num-modular"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2199,17 +2146,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "537b596b97c40fcf8056d153049eb22f481c17ebce72a513ec9286e4986d1bb6"
 dependencies = [
  "num-modular",
-]
-
-[[package]]
-name = "num-rational"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
-dependencies = [
- "num-bigint",
- "num-integer",
- "num-traits",
 ]
 
 [[package]]
@@ -2888,6 +2824,7 @@ dependencies = [
  "radiate-core",
  "radiate-engines",
  "radiate-error",
+ "radiate-gp",
  "radiate-selectors",
  "rand",
 ]
@@ -2915,6 +2852,9 @@ dependencies = [
  "radiate-expr",
  "radiate-utils",
  "rand",
+ "rayon",
+ "serde",
+ "serde_json",
  "smallvec",
 ]
 
@@ -2930,6 +2870,8 @@ dependencies = [
  "radiate-error",
  "radiate-selectors",
  "radiate-utils",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2951,6 +2893,19 @@ checksum = "3d48b82129f2be8b388fec34d3a7673ddb78c15a806f42c5f133bc775c062b99"
 dependencies = [
  "radiate-error",
  "radiate-utils",
+ "serde",
+]
+
+[[package]]
+name = "radiate-gp"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f383d99579e40cdcea2a497ae2c5c2f5b5047176d4be95c324462ea3358a4aa"
+dependencies = [
+ "radiate-core",
+ "radiate-utils",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2961,6 +2916,7 @@ checksum = "dcba502afb626269cef5ee4cb4e23bafb2d97f8f5f2f36e917f717f3033d4009"
 dependencies = [
  "radiate-core",
  "radiate-utils",
+ "serde",
 ]
 
 [[package]]
@@ -2976,6 +2932,8 @@ dependencies = [
  "num-traits",
  "radiate-error",
  "rand",
+ "serde",
+ "serde_json",
  "slotmap",
  "smallvec",
 ]
@@ -3690,6 +3648,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
 dependencies = [
  "pin-project-lite",
+ "tokio-macros",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]

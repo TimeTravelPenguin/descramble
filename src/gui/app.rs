@@ -1,15 +1,14 @@
-use std::{
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::Arc,
-};
+use std::{path::PathBuf, sync::Arc};
 
 use iced::{Task, widget::image::Handle};
 use image::RgbaImage;
-use num::Integer;
 use tracing::info;
 
-use crate::{application::DemoRun, gui::controls_state::ValidatedBinding, memetic::SolverConfig};
+use crate::{
+    application::ExperimentRun, gui::controls_state::ValidatedBinding, memetic::SolverConfig,
+};
+
+use super::worker::{self, ExperimentEvent};
 
 const INITIAL_PREVIEW_SIZE: u32 = 256;
 
@@ -17,6 +16,7 @@ pub(super) struct App {
     pub controls: AppControlsState,
     pub status: Status,
     pub preview: Option<Preview>,
+    pub progress: f32,
     config: SolverConfig,
 }
 
@@ -26,6 +26,7 @@ impl Default for App {
             controls: AppControlsState::default(),
             status: Status::Ready,
             preview: None,
+            progress: 0.0,
             config: SolverConfig::default(),
         }
     }
@@ -41,8 +42,12 @@ impl Default for AppControlsState {
     fn default() -> Self {
         Self {
             input_path: "images/penguin.jpg".into(),
-            preview_size: ValidatedBinding::new(INITIAL_PREVIEW_SIZE, validate),
-            rng_seed: ValidatedBinding::new(42, validate),
+            preview_size: ValidatedBinding::new(INITIAL_PREVIEW_SIZE, validate_preview_size),
+            rng_seed: ValidatedBinding::new(SolverConfig::default().seed, |value| {
+                value
+                    .parse()
+                    .map_err(|_| "Seed must be an unsigned integer".into())
+            }),
         }
     }
 }
@@ -52,8 +57,9 @@ pub(super) enum Message {
     InputChanged(String),
     OpenFileDialog,
     FileDialogResult(Option<PathBuf>),
-    RunDemo,
-    DemoFinished(Result<Arc<DemoRun>, String>),
+    RunExperiment,
+    ExperimentProgress(f32),
+    ExperimentFinished(Result<Arc<ExperimentRun>, String>),
     PreviewSizeChanged(String),
     RngSeedChanged(String),
 }
@@ -69,11 +75,11 @@ pub(super) struct Preview {
     pub original: Handle,
     pub scrambled: Handle,
     pub restored: Handle,
-    pub result: Arc<DemoRun>,
+    pub result: Arc<ExperimentRun>,
 }
 
 impl Preview {
-    fn new(result: Arc<DemoRun>) -> Self {
+    fn new(result: Arc<ExperimentRun>) -> Self {
         Self {
             original: image_handle(&result.original),
             scrambled: image_handle(&result.scrambled),
@@ -98,6 +104,7 @@ impl App {
                 self.controls.input_path = path;
                 self.status = Status::Ready;
                 self.preview = None;
+                self.progress = 0.0;
             }
 
             Message::OpenFileDialog if !self.is_running() => {
@@ -105,7 +112,7 @@ impl App {
                 return iced::Task::perform(
                     async {
                         rfd::AsyncFileDialog::new()
-                            .set_title("Select and image...")
+                            .set_title("Select an image…")
                             .set_directory(
                                 std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                             )
@@ -123,73 +130,80 @@ impl App {
                 self.controls.input_path = path.to_string_lossy().to_string();
                 self.status = Status::Ready;
                 self.preview = None;
+                self.progress = 0.0;
             }
 
             Message::FileDialogResult(None) if !self.is_running() => {
                 info!("File selection canceled");
             }
 
-            Message::RunDemo if !self.is_running() => {
+            Message::RunExperiment if !self.is_running() => {
                 if self.controls.input_path.trim().is_empty() {
                     self.status = Status::Failed("Enter an image path to begin.".into());
 
                     return Task::none();
                 }
 
+                if !self.controls.preview_size.is_valid() || !self.controls.rng_seed.is_valid() {
+                    self.status =
+                        Status::Failed("Correct the image size and seed before starting.".into());
+
+                    return Task::none();
+                }
+
                 self.status = Status::Running;
                 self.preview = None;
-                let input_path = self.controls.input_path.clone();
-                let config = self.config.clone();
-                let preview_size = *self.controls.preview_size.get_validated();
+                self.progress = 0.0;
 
-                return Task::perform(
-                    async move {
-                        // Keep the synchronous solver on one blocking worker: its
-                        // scoped random stream is thread-local. This also leaves
-                        // Iced's event loop and async executor free to respond.
-                        tokio::task::spawn_blocking(move || {
-                            tracing::info_span!("gui_demo", input = %input_path).in_scope(|| {
-                                let original = crate::storage::read_thumbnail(
-                                    Path::new(&input_path),
-                                    preview_size,
-                                )
-                                .map_err(|error| format!("{error:#}"))?;
-
-                                crate::application::run_demo(&original, &config)
-                                    .map(Arc::new)
-                                    .map_err(|error| error.to_string())
-                            })
-                        })
-                        .await
-                        .unwrap_or_else(|error| Err(format!("The image task stopped: {error}")))
+                return Task::run(
+                    worker::events(
+                        PathBuf::from(&self.controls.input_path),
+                        *self.controls.preview_size.get_validated(),
+                        self.config.clone(),
+                    ),
+                    |event| match event {
+                        ExperimentEvent::Progress(progress) => {
+                            Message::ExperimentProgress(progress)
+                        }
+                        ExperimentEvent::Finished(result) => Message::ExperimentFinished(result),
                     },
-                    Message::DemoFinished,
                 );
             }
 
-            Message::DemoFinished(result) => match result {
+            Message::ExperimentProgress(progress) if self.is_running() => {
+                if progress.is_finite() {
+                    self.progress = self.progress.max(progress.clamp(0.0, 1.0));
+                }
+            }
+
+            Message::ExperimentFinished(result) if self.is_running() => match result {
                 Ok(result) => {
                     self.preview = Some(Preview::new(result));
                     self.status = Status::Complete;
+                    self.progress = 1.0;
                 }
                 Err(error) => {
-                    tracing::error!(%error, "Image demo failed");
+                    tracing::error!(%error, "Image experiment failed");
                     self.status = Status::Failed(error);
                 }
             },
 
-            Message::PreviewSizeChanged(size) => {
+            Message::PreviewSizeChanged(size) if !self.is_running() => {
                 self.controls.preview_size.update(&size).ok();
             }
 
-            Message::RngSeedChanged(seed) => {
+            Message::RngSeedChanged(seed) if !self.is_running() => {
                 if let Ok(seed) = self.controls.rng_seed.update(&seed) {
                     self.config.seed = seed;
                 }
             }
 
             Message::InputChanged(_)
-            | Message::RunDemo
+            | Message::RunExperiment
+            | Message::ExperimentProgress(_)
+            | Message::ExperimentFinished(_)
+            | Message::PreviewSizeChanged(_)
+            | Message::RngSeedChanged(_)
             | Message::OpenFileDialog
             | Message::FileDialogResult(_) => {}
         }
@@ -198,17 +212,16 @@ impl App {
     }
 }
 
-fn validate<T: Integer + FromStr>(value: &str) -> Result<T, String> {
-    value
-        .parse::<T>()
-        .map_err(|_| "Preview size must be a positive integer".into())
-        .and_then(|size| {
-            if size == T::zero() {
-                Err("Preview size must be greater than zero".into())
-            } else {
-                Ok(size)
-            }
-        })
+fn validate_preview_size(value: &str) -> Result<u32, String> {
+    let size = value
+        .parse::<u32>()
+        .map_err(|_| "Preview size must be a positive integer")?;
+
+    if size == 0 {
+        return Err("Preview size must be greater than zero".into());
+    }
+
+    Ok(size)
 }
 
 #[cfg(test)]
@@ -218,15 +231,19 @@ mod tests {
     #[test]
     fn running_job_rejects_duplicate_requests_and_input_changes() {
         let mut app = App::default();
-        let _task = app.update(Message::RunDemo);
+        let _task = app.update(Message::RunExperiment);
 
         assert!(app.is_running());
 
-        let _duplicate = app.update(Message::RunDemo);
+        let _duplicate = app.update(Message::RunExperiment);
         let _edit = app.update(Message::InputChanged("different.png".into()));
+        let _size = app.update(Message::PreviewSizeChanged("100".into()));
+        let _seed = app.update(Message::RngSeedChanged("123".into()));
 
         assert!(app.is_running());
         assert_eq!(app.controls.input_path, "images/penguin.jpg");
+        assert_eq!(*app.controls.preview_size.get_validated(), 256);
+        assert_eq!(*app.controls.rng_seed.get_validated(), 42);
     }
 
     #[test]
@@ -239,17 +256,59 @@ mod tests {
             ..App::default()
         };
 
-        let _task = app.update(Message::RunDemo);
+        let _task = app.update(Message::RunExperiment);
         assert!(matches!(app.status, Status::Failed(_)));
 
         let _edit = app.update(Message::InputChanged("input.png".into()));
-        let _task = app.update(Message::RunDemo);
+        let _task = app.update(Message::RunExperiment);
         assert!(app.is_running());
 
-        let _completion = app.update(Message::DemoFinished(Err("Could not read image".into())));
+        let _completion = app.update(Message::ExperimentFinished(Err(
+            "Could not read image".into()
+        )));
         assert!(matches!(app.status, Status::Failed(_)));
 
-        let _retry = app.update(Message::RunDemo);
+        let _retry = app.update(Message::RunExperiment);
         assert!(app.is_running());
+    }
+
+    #[test]
+    fn progress_updates_complete_and_reset_for_another_experiment() {
+        let mut app = App::default();
+        let _start = app.update(Message::RunExperiment);
+        let _progress = app.update(Message::ExperimentProgress(0.25));
+        let _older_progress = app.update(Message::ExperimentProgress(0.1));
+        assert_eq!(app.progress, 0.25);
+
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([20, 40, 60, 255]));
+        let result = crate::application::run_experiment(&image, &app.config).unwrap();
+        let _completion = app.update(Message::ExperimentFinished(Ok(std::sync::Arc::new(result))));
+        let _late_progress = app.update(Message::ExperimentProgress(0.9));
+        assert!(matches!(app.status, Status::Complete));
+        assert!(app.preview.is_some());
+        assert_eq!(app.progress, 1.0);
+
+        let _restart = app.update(Message::RunExperiment);
+        assert!(app.is_running());
+        assert!(app.preview.is_none());
+        assert_eq!(app.progress, 0.0);
+    }
+
+    #[test]
+    fn invalid_settings_block_start_and_zero_is_a_valid_seed() {
+        let mut app = App::default();
+        let _invalid_size = app.update(Message::PreviewSizeChanged("0".into()));
+        let _start = app.update(Message::RunExperiment);
+        assert!(!app.is_running());
+
+        let _size = app.update(Message::PreviewSizeChanged("128".into()));
+        let _invalid_seed = app.update(Message::RngSeedChanged("invalid".into()));
+        let _start = app.update(Message::RunExperiment);
+        assert!(!app.is_running());
+
+        let _zero_seed = app.update(Message::RngSeedChanged("0".into()));
+        let _start = app.update(Message::RunExperiment);
+        assert!(app.is_running());
+        assert_eq!(app.config.seed, 0);
     }
 }

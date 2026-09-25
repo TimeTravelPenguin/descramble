@@ -2,7 +2,10 @@ use std::fmt::Display;
 
 use iced::{
     ContentFit, Element, Fill, Font, Padding, Theme,
-    widget::{button, column, container, image, row, rule, scrollable, text, text_input, tooltip},
+    widget::{
+        button, column, container, image, progress_bar, row, rule, scrollable, text, text_input,
+        tooltip,
+    },
 };
 
 use crate::gui::controls_state::ValidatedBinding;
@@ -16,17 +19,27 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         Status::Ready => "Choose an image to shuffle and restore.".to_owned(),
         Status::Running => "Restoring the shuffled image…".to_owned(),
         Status::Complete => "Restoration complete.".to_owned(),
-        Status::Failed(error) => format!("Could not complete the demo: {error}"),
+        Status::Failed(error) => format!("Could not complete the experiment: {error}"),
     };
 
     let mut content = column![
         attach_label("Image path", file_input),
         algorithm_config_row(app),
-        text("The demo makes a copy up to 256 pixels across before shuffling."),
+        text(format!(
+            "The experiment resizes a copy to at most {} pixels per side before shuffling.",
+            app.controls.preview_size.get_validated(),
+        )),
         text(status),
     ]
     .spacing(16)
     .width(Fill);
+
+    if app.is_running() || matches!(app.status, Status::Complete) {
+        content = content
+            .push(progress_bar(0.0..=1.0, app.progress))
+            .push(text(format!("Search generations completed: {:.0}%", app.progress * 100.0)))
+            .push(text("Rows account for the first half; columns for the second. Preparing distances and the starting population may take time."));
+    }
 
     if let Some(preview) = &app.preview {
         let report = &preview.result.report;
@@ -71,14 +84,17 @@ fn attach_label<'a>(label: &'a str, input: Element<'a, Message>) -> Element<'a, 
 fn file_input_row(app: &App) -> Element<'_, Message> {
     let mut input = text_input("Path to a PNG or JPEG image", &app.controls.input_path).padding(10);
     let mut open = button("Browse…").padding([10, 18]);
-    let mut run = button("Run demo").padding([10, 18]);
+    let mut run = button("Run experiment").padding([10, 18]);
 
     if !app.is_running() {
         input = input.on_input(Message::InputChanged);
         open = open.on_press(Message::OpenFileDialog);
 
-        if !app.controls.input_path.trim().is_empty() {
-            run = run.on_press(Message::RunDemo);
+        if !app.controls.input_path.trim().is_empty()
+            && app.controls.preview_size.is_valid()
+            && app.controls.rng_seed.is_valid()
+        {
+            run = run.on_press(Message::RunExperiment);
         }
     }
 
@@ -91,13 +107,15 @@ fn algorithm_config_row(app: &App) -> Element<'_, Message> {
         "Maximum height/width:",
         "Enter a number of pixels:",
         Message::PreviewSizeChanged,
+        !app.is_running(),
     );
 
     let rng_seed = int_input(
         &app.controls.rng_seed,
-        "Rng seed:",
+        "Random seed:",
         "Enter a number",
         Message::RngSeedChanged,
+        !app.is_running(),
     );
 
     column![preview_size, rng_seed]
@@ -111,22 +129,27 @@ fn int_input<'a, T, E>(
     label: &'a str,
     placeholder: &str,
     message: impl Fn(String) -> Message + 'a,
+    enabled: bool,
 ) -> Element<'a, Message>
 where
     T: Clone + Display,
 {
-    let is_error = input.is_valid();
+    let is_valid = input.is_valid();
 
     // Do not error on empty input, but do not update the validated value either.
     let error = if input.get_raw().trim().is_empty() {
         None
-    } else if !is_error {
+    } else if !is_valid {
         Some("Please enter a valid integer.")
     } else {
         None
     };
 
-    let input = text_input(placeholder, input.get_raw()).on_input(message);
+    let mut input = text_input(placeholder, input.get_raw());
+
+    if enabled {
+        input = input.on_input(message);
+    }
 
     let input = if let Some(error) = error {
         let err_input = input

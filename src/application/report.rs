@@ -22,7 +22,7 @@ pub struct RestorationReport {
 }
 
 #[derive(Debug, Serialize)]
-pub struct DemoReport {
+pub struct ExperimentReport {
     #[serde(flatten)]
     pub run: RestorationReport,
     pub scramble_order: ImageOrdering,

@@ -40,13 +40,13 @@ pub enum Command {
         solver: SolverArgs,
     },
     /// Resize BEFORE shuffling, then save the original, scrambled, restored, and report.
-    Demo {
+    Experiment {
         /// Input image to resize and scramble.
         #[arg(default_value = "images/penguin.jpg")]
         input: PathBuf,
 
         /// Output directory for the original, scrambled, restored images and report.
-        #[arg(long, default_value = "output/demo")]
+        #[arg(long, default_value = "output/experiment")]
         output_dir: PathBuf,
 
         /// Maximum width or height of the resized image.

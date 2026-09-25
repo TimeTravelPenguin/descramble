@@ -6,6 +6,8 @@ use serde::Serialize;
 use crate::objective::{DistanceMatrix, WindowObjective};
 use crate::{Error, Result};
 
+pub(crate) type OrderingEngine = GeneticEngine<PermutationChromosome<usize>, Vec<usize>>;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SolverConfig {
     /// None selects max(1, floor(number_of_items / 100)).
@@ -54,13 +56,235 @@ pub struct OrderingResult {
     pub generations: usize,
 }
 
+pub(crate) struct SeededSearch {
+    engine: OrderingEngine,
+    objective: Arc<WindowObjective>,
+    incumbent: Arc<Mutex<Incumbent>>,
+    input_cost: f64,
+    initial_best_cost: f64,
+    generations: usize,
+}
+
+struct InitialPopulation {
+    identity: Vec<usize>,
+    population: Vec<Phenotype<PermutationChromosome<usize>>>,
+    incumbent: Arc<Mutex<Incumbent>>,
+    input_cost: f64,
+    initial_best_cost: f64,
+    local_search: LocalSearch,
+}
+
+pub(crate) enum PreparedSeededSearch {
+    Complete(OrderingResult),
+    Search(Box<SeededSearch>),
+}
+
+fn prepare_seeded_search(
+    objective: Arc<WindowObjective>,
+    config: &SolverConfig,
+) -> Result<PreparedSeededSearch> {
+    let count = objective.distances().len();
+
+    if count == 1 {
+        let order = vec![0];
+        let input_cost = objective.score(&order);
+
+        return Ok(PreparedSeededSearch::Complete(OrderingResult {
+            order,
+            window: 0,
+            input_cost,
+            initial_best_cost: 0.0,
+            cost: 0.0,
+            generations: 0,
+        }));
+    }
+
+    build_seeded_search(objective, config)
+        .map(Box::new)
+        .map(PreparedSeededSearch::Search)
+}
+
+fn create_initial_population(
+    objective: Arc<WindowObjective>,
+    config: &SolverConfig,
+) -> InitialPopulation {
+    let count = objective.distances().len();
+
+    let identity: Vec<_> = (0..count).collect();
+    let input_cost = objective.score(&identity);
+
+    let mut local_search = LocalSearch::new(Arc::clone(&objective), config.local_passes);
+
+    let mut population = Vec::with_capacity(config.population);
+    let mut best_order = identity.clone();
+    let mut best_cost = input_cost;
+
+    let alleles: Arc<[usize]> = identity.clone().into();
+
+    for idx in 0..config.population {
+        let mut order = if idx == 0 {
+            identity.clone()
+        } else if idx < config.population / 2 {
+            nearest_neighbor(objective.distances(), random_provider::range(0..count))
+        } else {
+            random_provider::shuffled_indices(0..count)
+        };
+
+        local_search.improve(&mut order);
+
+        let cost = objective.score(&order);
+
+        if cost < best_cost {
+            best_cost = cost;
+            best_order.clone_from(&order);
+        }
+
+        let genes = order
+            .iter()
+            .map(|&item| PermutationGene::new(item, Arc::clone(&alleles)))
+            .collect();
+
+        let chromosome = PermutationChromosome::new(genes, Arc::clone(&alleles));
+
+        population.push(Phenotype::from(Genotype::from(chromosome)));
+    }
+
+    tracing::debug!(
+        initial_best_cost = best_cost,
+        input_cost,
+        "Initial population prepared"
+    );
+
+    InitialPopulation {
+        identity,
+        population,
+        incumbent: Arc::new(Mutex::new(Incumbent {
+            order: best_order,
+            cost: best_cost,
+        })),
+        input_cost,
+        initial_best_cost: best_cost,
+        local_search,
+    }
+}
+
+fn build_seeded_search(
+    objective: Arc<WindowObjective>,
+    config: &SolverConfig,
+) -> Result<SeededSearch> {
+    let initial = create_initial_population(Arc::clone(&objective), config);
+
+    let fitness_incumbent = Arc::clone(&initial.incumbent);
+    let fitness_objective = Arc::clone(&objective);
+
+    let engine = GeneticEngine::builder()
+        .codec(PermutationCodec::new(initial.identity))
+        .population_size(config.population)
+        .population(initial.population)
+        .minimizing()
+        .max_age(usize::MAX)
+        .offspring_fraction(0.75)
+        .offspring_selector(TournamentSelector::new(3))
+        .survivor_selector(EliteSelector::new())
+        .alter(alters![
+            PMXCrossover::new(0.8),
+            InclusiveInversion,
+            initial.local_search
+        ])
+        .fitness_fn(move |order: Vec<usize>| {
+            let cost = fitness_objective.score(&order);
+
+            fitness_incumbent
+                .lock()
+                .expect("incumbent lock poisoned")
+                .consider(&order, cost);
+
+            fitness_objective.normalize(cost)
+        })
+        .try_build()
+        .map_err(|error| Error::Evolution(error.to_string()))?;
+
+    Ok(SeededSearch {
+        engine,
+        objective,
+        incumbent: initial.incumbent,
+        input_cost: initial.input_cost,
+        initial_best_cost: initial.initial_best_cost,
+        generations: config.generations,
+    })
+}
+
+impl SeededSearch {
+    fn run(self) -> Result<OrderingResult> {
+        let Self {
+            engine,
+            objective,
+            incumbent,
+            input_cost,
+            initial_best_cost,
+            generations,
+        } = self;
+
+        let result = engine
+            .iter()
+            .until_generation(generations)
+            .run()
+            .map_err(|error| Error::Evolution(error.to_string()))?;
+
+        // Retain every evaluated improvement in f64, even if Radiate's f32
+        // selection treats it as a tie and discards it before the final generation.
+        let mut best_order = incumbent
+            .lock()
+            .expect("incumbent lock poisoned")
+            .order
+            .clone();
+
+        // Whole-order reversal is equivalent. This convention only
+        // stabilizes output orientation.
+        if best_order[0] > best_order[best_order.len() - 1] {
+            best_order.reverse();
+        }
+
+        let cost = objective.score(&best_order);
+
+        tracing::debug!(
+            cost,
+            initial_best_cost,
+            generations = result.index(),
+            "Ordering search finished"
+        );
+
+        Ok(OrderingResult {
+            cost,
+            order: best_order,
+            window: objective.window(),
+            input_cost,
+            initial_best_cost,
+            generations: result.index(),
+        })
+    }
+}
+
 /// A practical permutation memetic algorithm, not an exact historical-tree reproduction.
 /// Random operators run on the caller's thread; distance construction alone is parallel.
 pub fn solve(distances: DistanceMatrix, config: &SolverConfig) -> Result<OrderingResult> {
+    with_seeded_search(distances, config, PreparedSeededSearch::run)
+}
+
+/// Prepare, optionally observe, and execute the engine inside one scoped RNG stream.
+/// The execution closure must run the search synchronously on the calling thread.
+/// This keeps initialization and evolution on the same seeded random stream.
+pub(crate) fn with_seeded_search(
+    distances: DistanceMatrix,
+    config: &SolverConfig,
+    execute: impl FnOnce(PreparedSeededSearch) -> Result<OrderingResult>,
+) -> Result<OrderingResult> {
     config.validate()?;
+
     let count = distances.len();
     let window = config.window.unwrap_or((count / 100).max(1));
     let objective = Arc::new(WindowObjective::new(distances, window)?);
+
     tracing::debug!(
         items = count,
         window = objective.window(),
@@ -73,124 +297,27 @@ pub fn solve(distances: DistanceMatrix, config: &SolverConfig) -> Result<Orderin
 
     // Radiate's global seed() does not reset an already initialized thread-local RNG.
     // scoped_seed() resets that actual stream, including for repeated calls on one thread.
-    random_provider::scoped_seed(config.seed, || solve_seeded(objective, config))
+    random_provider::scoped_seed(config.seed, || {
+        execute(prepare_seeded_search(objective, config)?)
+    })
 }
 
-fn solve_seeded(objective: Arc<WindowObjective>, config: &SolverConfig) -> Result<OrderingResult> {
-    let count = objective.distances().len();
-    let identity: Vec<usize> = (0..count).collect();
-    let input_cost = objective.score(&identity);
-
-    if count == 1 {
-        return Ok(OrderingResult {
-            order: identity,
-            window: 0,
-            input_cost,
-            initial_best_cost: 0.0,
-            cost: 0.0,
-            generations: 0,
-        });
-    }
-
-    let mut local_search = LocalSearch::new(Arc::clone(&objective), config.local_passes);
-    let alleles: Arc<[usize]> = identity.clone().into();
-    let mut population = Vec::with_capacity(config.population);
-    let mut best_order = identity.clone();
-    let mut best_cost = input_cost;
-
-    for idx in 0..config.population {
-        let mut order = if idx == 0 {
-            identity.clone()
-        } else if idx < config.population / 2 {
-            nearest_neighbor(objective.distances(), random_provider::range(0..count))
-        } else {
-            random_provider::shuffled_indices(0..count)
-        };
-
-        local_search.improve(&mut order);
-        let cost = objective.score(&order);
-
-        if cost < best_cost {
-            best_cost = cost;
-            best_order.clone_from(&order);
+impl PreparedSeededSearch {
+    /// Single-item orderings are already complete and need no engine.
+    #[cfg(feature = "gui")]
+    pub(crate) fn engine(&self) -> Option<&OrderingEngine> {
+        match self {
+            Self::Complete(_) => None,
+            Self::Search(search) => Some(&search.engine),
         }
-
-        let genes = order
-            .iter()
-            .map(|&item| PermutationGene::new(item, Arc::clone(&alleles)))
-            .collect();
-        let chromosome = PermutationChromosome::new(genes, Arc::clone(&alleles));
-        population.push(Phenotype::from(Genotype::from(chromosome)));
     }
 
-    let initial_best_cost = best_cost;
-    tracing::debug!(initial_best_cost, input_cost, "Initial population prepared");
-
-    let incumbent = Arc::new(Mutex::new(Incumbent {
-        order: best_order,
-        cost: best_cost,
-    }));
-    let fitness_incumbent = Arc::clone(&incumbent);
-    let fitness_objective = Arc::clone(&objective);
-    let engine = GeneticEngine::builder()
-        .codec(PermutationCodec::new(identity))
-        .population_size(config.population)
-        .population(population)
-        .minimizing()
-        .max_age(usize::MAX)
-        .offspring_fraction(0.75)
-        .offspring_selector(TournamentSelector::new(3))
-        .survivor_selector(EliteSelector::new())
-        .alter(alters![
-            PMXCrossover::new(0.8),
-            InclusiveInversion,
-            local_search
-        ])
-        .fitness_fn(move |order: Vec<usize>| {
-            let cost = fitness_objective.score(&order);
-            fitness_incumbent
-                .lock()
-                .expect("incumbent lock poisoned")
-                .consider(&order, cost);
-            fitness_objective.normalize(cost)
-        })
-        .try_build()
-        .map_err(|error| Error::Evolution(error.to_string()))?;
-
-    let result = engine
-        .iter()
-        .until_generation(config.generations)
-        .run()
-        .map_err(|error| Error::Evolution(error.to_string()))?;
-
-    // Keep every evaluated improvement in f64, even if Radiate's f32 selection
-    // treats it as a tie and discards it before the final generation.
-    let mut best_order = incumbent
-        .lock()
-        .expect("incumbent lock poisoned")
-        .order
-        .clone();
-
-    // Whole-order reversal is equivalent. This convention only stabilizes output orientation.
-    if best_order[0] > best_order[count - 1] {
-        best_order.reverse();
+    pub(crate) fn run(self) -> Result<OrderingResult> {
+        match self {
+            Self::Complete(result) => Ok(result),
+            Self::Search(search) => search.run(),
+        }
     }
-
-    tracing::debug!(
-        cost = objective.score(&best_order),
-        initial_best_cost,
-        generations = result.index(),
-        "Ordering search finished"
-    );
-
-    Ok(OrderingResult {
-        cost: objective.score(&best_order),
-        order: best_order,
-        window: objective.window(),
-        input_cost,
-        initial_best_cost,
-        generations: result.index(),
-    })
 }
 
 struct Incumbent {

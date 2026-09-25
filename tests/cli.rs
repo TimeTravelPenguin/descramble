@@ -163,14 +163,78 @@ fn commands_reject_symbolic_and_hard_link_aliases() {
 }
 
 #[test]
-fn demo_checks_every_destination_before_replacing_outputs() {
+fn experiment_writes_reconstructable_images_and_search_report() {
     let directory = tempfile::tempdir().unwrap();
     let input = fixture(&directory);
-    let output = directory.path().join("demo");
+    let input_bytes = fs::read(&input).unwrap();
+    let output = directory.path().join("experiment");
+    let result = run(&[
+        "experiment",
+        path(&input),
+        "--output-dir",
+        path(&output),
+        "--max-dimension",
+        "8",
+        "--population",
+        "6",
+        "--generations",
+        "2",
+        "--local-passes",
+        "0",
+        "--seed",
+        "42",
+    ]);
+
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8_lossy(&result.stdout).contains("Saved experiment to"));
+    assert_eq!(fs::read(&input).unwrap(), input_bytes);
+
+    let original = image::open(output.join("original.png")).unwrap().to_rgba8();
+    let scrambled = image::open(output.join("scrambled.png"))
+        .unwrap()
+        .to_rgba8();
+    let restored = image::open(output.join("restored.png")).unwrap().to_rgba8();
+    let report: Value =
+        serde_json::from_slice(&fs::read(output.join("report.json")).unwrap()).unwrap();
+    let scramble_order = read_order(
+        &report["scramble_order"]["rows"],
+        &report["scramble_order"]["columns"],
+    );
+    let restoration_order = read_order(
+        &report["restoration"]["rows"]["order"],
+        &report["restoration"]["columns"]["order"],
+    );
+
+    assert_eq!(original.width().max(original.height()), 8);
+    assert_eq!(apply_order(&original, &scramble_order).unwrap(), scrambled);
+    assert_eq!(
+        apply_order(&scrambled, &restoration_order).unwrap(),
+        restored
+    );
+    assert!(report.get("run").is_none());
+    assert_eq!(report["width"], original.width());
+    assert_eq!(report["height"], original.height());
+    assert_eq!(report["config"]["seed"], 42);
+    assert_eq!(report["config"]["generations"], 2);
+    assert_eq!(report["restoration"]["rows"]["generations"], 2);
+    assert_eq!(report["restoration"]["columns"]["generations"], 2);
+    assert!(report["row_adjacency_recovery"].is_number());
+    assert!(report["column_adjacency_recovery"].is_number());
+}
+
+#[test]
+fn experiment_checks_every_destination_before_replacing_outputs() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = fixture(&directory);
+    let output = directory.path().join("experiment");
     fs::create_dir(&output).unwrap();
     fs::create_dir(output.join("report.json")).unwrap();
     fs::write(output.join("original.png"), b"original output").unwrap();
-    let result = run(&["demo", path(&input), "--output-dir", path(&output)]);
+    let result = run(&["experiment", path(&input), "--output-dir", path(&output)]);
     assert!(!result.status.success());
     assert_eq!(
         fs::read(output.join("original.png")).unwrap(),

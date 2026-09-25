@@ -21,16 +21,16 @@ pub fn run(command: Command) -> Result<()> {
             output,
             solver,
         } => run_restore(input, output, solver),
-        Command::Demo {
+        Command::Experiment {
             input,
             output_dir,
             max_dimension,
             solver,
-        } => run_demo(input, output_dir, max_dimension, solver),
+        } => run_experiment(input, output_dir, max_dimension, solver),
     }
 }
 
-fn run_demo(
+fn run_experiment(
     input: PathBuf,
     output_dir: PathBuf,
     max_dimension: u32,
@@ -56,23 +56,23 @@ fn run_demo(
     )?;
 
     let original = storage::read_thumbnail(&input, max_dimension)?;
-    let demo = application::run_demo(&original, &config)?;
+    let experiment = application::run_experiment(&original, &config)?;
 
-    print_costs(&demo.report.run.restoration);
+    print_costs(&experiment.report.run.restoration);
     println!(
         "Original neighbor recovery: rows {:.1}%, columns {:.1}%",
-        100.0 * demo.report.row_adjacency_recovery,
-        100.0 * demo.report.column_adjacency_recovery
+        100.0 * experiment.report.row_adjacency_recovery,
+        100.0 * experiment.report.column_adjacency_recovery
     );
 
     storage::commit_outputs(vec![
-        storage::stage_png(&demo.original, &original_path)?,
-        storage::stage_png(&demo.scrambled, &scrambled_path)?,
-        storage::stage_png(&demo.restored, &restored_path)?,
-        storage::stage_json(&demo.report, &report_path)?,
+        storage::stage_png(&experiment.original, &original_path)?,
+        storage::stage_png(&experiment.scrambled, &scrambled_path)?,
+        storage::stage_png(&experiment.restored, &restored_path)?,
+        storage::stage_json(&experiment.report, &report_path)?,
     ])?;
 
-    println!("Saved demo to {}", output_dir.display());
+    println!("Saved experiment to {}", output_dir.display());
     Ok(())
 }
 

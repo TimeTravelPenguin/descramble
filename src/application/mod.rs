@@ -11,10 +11,10 @@ use image::RgbaImage;
 
 use crate::{
     Result,
-    image_ordering::{apply_order, restore, scramble},
+    image_ordering::{Restoration, apply_order, restore, scramble},
     memetic::SolverConfig,
 };
-pub use report::{DemoReport, RestorationReport, ScrambleReport};
+pub use report::{ExperimentReport, RestorationReport, ScrambleReport};
 
 #[derive(Debug)]
 pub struct ScrambleRun {
@@ -29,11 +29,11 @@ pub struct RestorationRun {
 }
 
 #[derive(Debug)]
-pub struct DemoRun {
+pub struct ExperimentRun {
     pub original: RgbaImage,
     pub scrambled: RgbaImage,
     pub restored: RgbaImage,
-    pub report: DemoReport,
+    pub report: ExperimentReport,
 }
 
 pub fn run_scramble(image: &RgbaImage, seed: u64) -> Result<ScrambleRun> {
@@ -52,18 +52,29 @@ pub fn run_scramble(image: &RgbaImage, seed: u64) -> Result<ScrambleRun> {
 }
 
 pub fn run_restoration(image: &RgbaImage, config: &SolverConfig) -> Result<RestorationRun> {
+    run_restoration_with(image, config, restore)
+}
+
+fn run_restoration_with(
+    image: &RgbaImage,
+    config: &SolverConfig,
+    restore_image: impl FnOnce(&RgbaImage, &SolverConfig) -> Result<Restoration>,
+) -> Result<RestorationRun> {
     let span = tracing::info_span!(
         "restoration",
         width = image.width(),
         height = image.height(),
         seed = config.seed
     );
+
     let _entered = span.enter();
     tracing::info!("Starting row and column ordering");
+
     let start = Instant::now();
-    let restoration = restore(image, config)?;
+    let restoration = restore_image(image, config)?;
     let restored = apply_order(image, &restoration.ordering())?;
     let elapsed_seconds = start.elapsed().as_secs_f64();
+
     tracing::info!(
         elapsed_seconds,
         row_cost = restoration.rows.cost,
@@ -85,25 +96,39 @@ pub fn run_restoration(image: &RgbaImage, config: &SolverConfig) -> Result<Resto
 
 /// The caller resizes the original before calling this function, if desired.
 /// Ground truth is only used for evaluation after the solver has completed.
-pub fn run_demo(original: &RgbaImage, config: &SolverConfig) -> Result<DemoRun> {
+pub fn run_experiment(original: &RgbaImage, config: &SolverConfig) -> Result<ExperimentRun> {
+    run_experiment_with(original, config, restore)
+}
+
+/// Reuse scrambling, reconstruction, timing, and evaluation with an observed restoration.
+/// The supplied operation sees only the scrambled image, never the ground truth.
+pub(crate) fn run_experiment_with(
+    original: &RgbaImage,
+    config: &SolverConfig,
+    restore_image: impl FnOnce(&RgbaImage, &SolverConfig) -> Result<Restoration>,
+) -> Result<ExperimentRun> {
     config.validate()?;
+
     let scrambled = run_scramble(original, config.seed)?;
-    let restored = run_restoration(&scrambled.image, config)?;
+    let restored = run_restoration_with(&scrambled.image, config, restore_image)?;
+
     let rows = &restored.report.restoration.rows.order;
     let columns = &restored.report.restoration.columns.order;
+
     let row_adjacency_recovery = adjacency_recovery(&scrambled.report.ordering.rows, rows);
     let column_adjacency_recovery = adjacency_recovery(&scrambled.report.ordering.columns, columns);
+
     tracing::info!(
         row_adjacency_recovery,
         column_adjacency_recovery,
-        "Demo evaluated"
+        "Experiment evaluated"
     );
 
-    Ok(DemoRun {
+    Ok(ExperimentRun {
         original: original.clone(),
         scrambled: scrambled.image,
         restored: restored.image,
-        report: DemoReport {
+        report: ExperimentReport {
             run: restored.report,
             scramble_order: scrambled.report.ordering,
             row_adjacency_recovery,

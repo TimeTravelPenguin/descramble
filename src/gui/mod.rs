@@ -3,6 +3,7 @@
 mod app;
 mod controls_state;
 mod view;
+mod worker;
 
 pub fn run() -> iced::Result {
     iced::application(app::App::default, app::App::update, view::view)

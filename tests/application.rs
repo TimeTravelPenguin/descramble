@@ -2,7 +2,7 @@ use descramble::{application, image_ordering::apply_order, memetic::SolverConfig
 use image::{Rgba, RgbaImage};
 
 #[test]
-fn shared_demo_returns_reconstructable_images_and_compatible_report() {
+fn shared_experiment_returns_reconstructable_images_and_compatible_report() {
     let original = RgbaImage::from_fn(9, 7, |column, row| {
         Rgba([
             (column * 25) as u8,
@@ -17,7 +17,7 @@ fn shared_demo_returns_reconstructable_images_and_compatible_report() {
         generations: 3,
         ..SolverConfig::default()
     };
-    let result = application::run_demo(&original, &config).unwrap();
+    let result = application::run_experiment(&original, &config).unwrap();
     assert_eq!(result.original, original);
     assert_eq!(
         apply_order(&original, &result.report.scramble_order).unwrap(),
@@ -43,5 +43,5 @@ fn shared_workflows_propagate_invalid_input_without_startup_setup() {
     let empty = RgbaImage::new(0, 0);
     assert!(application::run_scramble(&empty, 1).is_err());
     assert!(application::run_restoration(&empty, &SolverConfig::default()).is_err());
-    assert!(application::run_demo(&empty, &SolverConfig::default()).is_err());
+    assert!(application::run_experiment(&empty, &SolverConfig::default()).is_err());
 }
