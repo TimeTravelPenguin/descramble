@@ -11,8 +11,13 @@ use iced::{
 use crate::gui::controls_state::ValidatedBinding;
 
 use super::app::{App, Message, Status};
+use super::viewer::ImageKind;
 
 pub(super) fn view(app: &App) -> Element<'_, Message> {
+    if let Some(viewer) = app.viewer() {
+        return viewer.view().map(Message::Viewer);
+    }
+
     let file_input = file_input_row(app);
 
     let status = match &app.status {
@@ -37,8 +42,14 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     if app.is_running() || matches!(app.status, Status::Complete) {
         content = content
             .push(progress_bar(0.0..=1.0, app.progress))
-            .push(text(format!("Search generations completed: {:.0}%", app.progress * 100.0)))
-            .push(text("Rows account for the first half; columns for the second. Preparing distances and the starting population may take time."));
+            .push(text(format!(
+                "Search generations completed: {:.0}%",
+                app.progress * 100.0
+            )))
+            .push(text(
+                "Rows account for the first half; columns for the second. \
+                    Preparing distances and the starting population may take time.",
+            ));
     }
 
     if let Some(preview) = &app.preview {
@@ -46,9 +57,9 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         content = content
             .push(
                 row![
-                    image_card("Original", &preview.original),
-                    image_card("Shuffled", &preview.scrambled),
-                    image_card("Restored", &preview.restored),
+                    image_card("Original", &preview.original, ImageKind::Original),
+                    image_card("Shuffled", &preview.scrambled, ImageKind::Shuffled),
+                    image_card("Restored", &preview.restored, ImageKind::Restored),
                 ]
                 .spacing(16),
             )
@@ -185,19 +196,21 @@ where
     attach_label(label, input)
 }
 
-fn image_card<'a>(title: &'a str, handle: &image::Handle) -> Element<'a, Message> {
-    container(
+fn image_card<'a>(title: &'a str, handle: &image::Handle, kind: ImageKind) -> Element<'a, Message> {
+    button(
         column![
             text(title).size(18),
             image(handle.clone())
                 .width(Fill)
                 .height(256)
                 .content_fit(ContentFit::Contain),
+            text("Click to enlarge and compare").size(13),
         ]
         .spacing(12),
     )
     .padding(16)
     .width(Fill)
-    .style(container::rounded_box)
+    .style(button::secondary)
+    .on_press(Message::OpenImage(kind))
     .into()
 }

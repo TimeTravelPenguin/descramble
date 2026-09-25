@@ -44,6 +44,35 @@ an observer before running it, all within the same thread-local seed scope. The 
 `worker.rs` owns the Radiate subscription, watch channel, and Iced event stream; shared
 application code still handles reconstruction and reports for both interfaces.
 
+After an experiment, click any image to open the enlarged viewer:
+
+- **Original / Result / Shuffled:** view one image; **Swap** or **Space** switches
+  between original and result while keeping the same zoom and position.
+- **Onion skin:** blend original and result using the result-opacity slider.
+- **Before / after:** drag the divider on the image, or use the slider below the
+  mode buttons. The original is on the left and the result is on the right.
+- **Difference:** inspect the maximum absolute RGBA channel error per pixel.
+  Black means an exact match; brighter pixels mean larger errors. Increase gain
+  to expose small errors. Magenta marks areas covered by only one image.
+
+Scroll over the image to zoom, drag it to pan, and use **Fit** to reset navigation.
+In before / after mode, dragging near the divider moves it instead of panning.
+**Back** or **Escape** returns to the experiment. Rotate the result in 90-degree
+steps or flip it horizontally/vertically to align it with the original; **Reset
+alignment** restores the solver's orientation. These adjustments persist when
+reopening the viewer for the same experiment and do not change the solver output
+or report. Rectangular images with different orientations are centered on a shared
+canvas without resampling, with unmatched coverage counted as differing pixels.
+The viewer uses the experiment's resized images; increase the maximum dimension
+before running if you need more detail.
+
+Use **Save…** in the viewer to choose a PNG destination with the native `rfd`
+save dialog. This exports the full image displayed when you click Save, including
+rotation/flips, onion skin, before/after, or difference gain. It preserves RGBA
+pixels at the viewer's image resolution; zoom, pan, the checkerboard background,
+and divider controls are not included. Keep the `.png` extension. Saving runs in
+the background and reports completion or errors in the viewer.
+
 `experiment` uses `images/penguin.jpg` by default, creates its output directory (default
 `output/experiment`), and writes `original.png`, `scrambled.png`, `restored.png`, and
 `report.json`. For `scramble` and `restore`, the output parent directory must already

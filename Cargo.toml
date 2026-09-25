@@ -14,9 +14,11 @@ clap = { version = "4.6.7", features = ["derive"] }
 color-eyre = "0.6.5"
 iced = {
   version = "0.14.0",
-  features = ["fira-sans", "image-without-codecs", "tokio"],
+  features = ["fira-sans", "image-without-codecs", "tokio", "canvas"],
   optional = true,
 }
+# Explicit image allocation is not re-exported by Iced's image-without-codecs feature.
+iced_runtime = { version = "0.14.0", optional = true }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 radiate = { version = "=1.3.1", features = ["rayon", "serde"] }
 rand = "0.10.3"
@@ -35,4 +37,5 @@ default = ["gui"]
 
 gui = [
   "dep:iced",
+  "dep:iced_runtime",
 ]

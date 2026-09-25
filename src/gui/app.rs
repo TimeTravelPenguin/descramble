@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use iced::{Task, widget::image::Handle};
+use iced::{Subscription, Task, keyboard, widget::image::Handle};
 use image::RgbaImage;
 use tracing::info;
 
@@ -8,6 +8,7 @@ use crate::{
     application::ExperimentRun, gui::controls_state::ValidatedBinding, memetic::SolverConfig,
 };
 
+use super::viewer::{self, ImageKind, Viewer};
 use super::worker::{self, ExperimentEvent};
 
 const INITIAL_PREVIEW_SIZE: u32 = 256;
@@ -17,6 +18,8 @@ pub(super) struct App {
     pub status: Status,
     pub preview: Option<Preview>,
     pub progress: f32,
+    viewer: Option<Viewer>,
+    viewer_open: bool,
     config: SolverConfig,
 }
 
@@ -27,6 +30,8 @@ impl Default for App {
             status: Status::Ready,
             preview: None,
             progress: 0.0,
+            viewer: None,
+            viewer_open: false,
             config: SolverConfig::default(),
         }
     }
@@ -62,6 +67,8 @@ pub(super) enum Message {
     ExperimentFinished(Result<Arc<ExperimentRun>, String>),
     PreviewSizeChanged(String),
     RngSeedChanged(String),
+    OpenImage(ImageKind),
+    Viewer(viewer::Message),
 }
 
 pub(super) enum Status {
@@ -94,17 +101,72 @@ fn image_handle(image: &RgbaImage) -> Handle {
 }
 
 impl App {
+    pub fn viewer(&self) -> Option<&Viewer> {
+        self.viewer.as_ref().filter(|_| self.viewer_open)
+    }
+
+    pub fn subscription(&self) -> Subscription<Message> {
+        if !self.viewer_open {
+            return Subscription::none();
+        }
+
+        keyboard::listen().filter_map(|event| match event {
+            keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                ..
+            } => Some(Message::Viewer(viewer::Message::Close)),
+            keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Space),
+                repeat: false,
+                ..
+            } => Some(Message::Viewer(viewer::Message::Swap)),
+            _ => None,
+        })
+    }
+
     pub fn is_running(&self) -> bool {
         matches!(self.status, Status::Running)
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::OpenImage(image) => {
+                if let Some(preview) = &self.preview {
+                    if let Some(viewer) = &mut self.viewer {
+                        viewer.open(image);
+                    } else {
+                        self.viewer = Some(Viewer::new(Arc::clone(&preview.result), image));
+                    }
+
+                    self.viewer_open = true;
+
+                    if let Some(viewer) = &mut self.viewer {
+                        return viewer.prepare().map(Message::Viewer);
+                    }
+                }
+            }
+
+            Message::Viewer(viewer::Message::Close) => self.viewer_open = false,
+            Message::Viewer(message) => {
+                // Finish background work even when the viewer was closed in the meantime.
+                if (self.viewer_open
+                    || matches!(
+                        message,
+                        viewer::Message::ImageAllocated(..) | viewer::Message::SaveFinished(..)
+                    ))
+                    && let Some(viewer) = &mut self.viewer
+                {
+                    return viewer.update(message).map(Message::Viewer);
+                }
+            }
+
             Message::InputChanged(path) if !self.is_running() => {
                 self.controls.input_path = path;
                 self.status = Status::Ready;
                 self.preview = None;
                 self.progress = 0.0;
+                self.viewer = None;
+                self.viewer_open = false;
             }
 
             Message::OpenFileDialog if !self.is_running() => {
@@ -131,6 +193,8 @@ impl App {
                 self.status = Status::Ready;
                 self.preview = None;
                 self.progress = 0.0;
+                self.viewer = None;
+                self.viewer_open = false;
             }
 
             Message::FileDialogResult(None) if !self.is_running() => {
@@ -154,6 +218,8 @@ impl App {
                 self.status = Status::Running;
                 self.preview = None;
                 self.progress = 0.0;
+                self.viewer = None;
+                self.viewer_open = false;
 
                 return Task::run(
                     worker::events(
@@ -310,5 +376,33 @@ mod tests {
         let _start = app.update(Message::RunExperiment);
         assert!(app.is_running());
         assert_eq!(app.config.seed, 0);
+    }
+
+    #[test]
+    fn viewer_requires_a_result_and_closes_when_the_experiment_is_replaced() {
+        use super::super::viewer::{self, ImageKind};
+
+        let mut app = App::default();
+        let _open = app.update(Message::OpenImage(ImageKind::Original));
+        assert!(app.viewer().is_none());
+
+        let _start = app.update(Message::RunExperiment);
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([20, 40, 60, 255]));
+        let result = crate::application::run_experiment(&image, &app.config).unwrap();
+        let _complete = app.update(Message::ExperimentFinished(Ok(std::sync::Arc::new(result))));
+        let _open = app.update(Message::OpenImage(ImageKind::Restored));
+        assert!(app.viewer().is_some());
+
+        let _close = app.update(Message::Viewer(viewer::Message::Close));
+        assert!(app.viewer().is_none());
+        assert!(app.viewer.is_some(), "closing preserves alignment state");
+
+        let _open = app.update(Message::OpenImage(ImageKind::Original));
+        assert!(app.viewer().is_some());
+
+        let _new_input = app.update(Message::InputChanged("next.png".into()));
+        assert!(app.viewer().is_none());
+        assert!(app.viewer.is_none());
+        assert!(app.preview.is_none());
     }
 }
