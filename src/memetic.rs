@@ -125,6 +125,7 @@ fn solve_seeded(objective: Arc<WindowObjective>, config: &SolverConfig) -> Resul
 
     let initial_best_cost = best_cost;
     tracing::debug!(initial_best_cost, input_cost, "Initial population prepared");
+
     let incumbent = Arc::new(Mutex::new(Incumbent {
         order: best_order,
         cost: best_cost,
@@ -238,6 +239,7 @@ fn nearest_neighbor(distances: &DistanceMatrix, start: usize) -> Vec<usize> {
     let mut order = Vec::with_capacity(distances.len());
     let mut visited = vec![false; distances.len()];
     let mut current = start;
+
     order.push(current);
     visited[current] = true;
 
@@ -312,10 +314,12 @@ impl LocalSearch {
         let original = &mut self.original;
         original.clear();
         original.extend_from_slice(order);
+
         let original_cost = self.objective.score(order);
         let tolerance = 1e-12 * original_cost;
         let positions = &mut self.positions;
         positions.resize(order.len(), 0);
+
         let mut accepted = 0;
 
         for (position, &item) in order.iter().enumerate() {

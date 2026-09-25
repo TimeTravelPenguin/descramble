@@ -38,6 +38,7 @@ impl Restoration {
 /// but does not contribute to similarity. No spatial filters are used.
 pub fn distances(image: &RgbaImage, axis: Axis) -> Result<DistanceMatrix> {
     check_dimensions(image)?;
+
     let (count, length) = match axis {
         Axis::Rows => (image.height(), image.width()),
         Axis::Columns => (image.width(), image.height()),
@@ -67,13 +68,17 @@ pub fn distances(image: &RgbaImage, axis: Axis) -> Result<DistanceMatrix> {
 
 pub fn restore(image: &RgbaImage, config: &SolverConfig) -> Result<Restoration> {
     config.validate()?;
+
     tracing::debug!(items = image.height(), "Ordering rows");
+
     let rows = solve(distances(image, Axis::Rows)?, config)?;
     let column_config = SolverConfig {
         seed: config.seed.wrapping_add(1),
         ..config.clone()
     };
+
     tracing::debug!(items = image.width(), "Ordering columns");
+
     let columns = solve(distances(image, Axis::Columns)?, &column_config)?;
 
     Ok(Restoration { rows, columns })
@@ -81,11 +86,14 @@ pub fn restore(image: &RgbaImage, config: &SolverConfig) -> Result<Restoration> 
 
 pub fn scramble(image: &RgbaImage, seed: u64) -> Result<(RgbaImage, ImageOrdering)> {
     check_dimensions(image)?;
+
     let mut rng = StdRng::seed_from_u64(seed);
     let mut rows: Vec<usize> = (0..image.height() as usize).collect();
     let mut columns: Vec<usize> = (0..image.width() as usize).collect();
+
     rows.shuffle(&mut rng);
     columns.shuffle(&mut rng);
+
     let ordering = ImageOrdering { rows, columns };
 
     Ok((apply_order(image, &ordering)?, ordering))
