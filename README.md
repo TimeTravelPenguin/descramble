@@ -10,6 +10,25 @@ PMX crossover, and candidate-based local search replace the historical ordered-t
 representation, PDG crossover, and population hierarchy. It does **not** reproduce the
 2007 Tabu Search implementation.
 
+<table align="center">
+  <tr>
+    <td align="center" width="50%">
+      <img src="./assets/scrambled.png" width="300">
+    </td>
+    <td align="center" width="50%">
+      <img src="./assets/original.png" width="300">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      An image with rows and columns shuffled
+    </td>
+    <td align="center" width="50%">
+      The recovered image by the memetic algorithm
+    </td>
+  </tr>
+</table>
+
 ## Run
 
 Use release builds for searches:
