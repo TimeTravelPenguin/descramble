@@ -189,8 +189,8 @@ where
         input = input.on_input(message);
     }
 
-    let input = if let Some(error) = error {
-        let err_input = input
+    if error.is_some() {
+        input = input
             .icon(text_input::Icon {
                 font: Font::DEFAULT,
                 code_point: '⚠',
@@ -207,18 +207,20 @@ where
 
                 style
             });
+    }
 
-        tooltip(
-            err_input,
+    // Keep the input at the same tree position so validation preserves focus and selection.
+    let input = tooltip(
+        input,
+        error.map(|error| {
             container(text(error).size(14))
                 .padding(8)
-                .style(container::danger),
-            tooltip::Position::Bottom,
-        )
-        .into()
-    } else {
-        input.into()
-    };
+                .style(container::danger)
+        }),
+        tooltip::Position::Bottom,
+    )
+    .padding(5)
+    .into();
 
     attach_label(label, input)
 }
@@ -240,4 +242,53 @@ fn image_card<'a>(title: &'a str, handle: &image::Handle, kind: ImageKind) -> El
     .style(button::secondary)
     .on_press(Message::OpenImage(kind))
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use iced_runtime::core::{
+        text::Renderer as TextRenderer,
+        widget::{Tree, tree::Tag},
+    };
+
+    use super::*;
+
+    type InputState = text_input::State<<iced::Renderer as TextRenderer>::Paragraph>;
+
+    fn input_state(tree: &mut Tree) -> Option<&mut InputState> {
+        if tree.tag == Tag::of::<InputState>() {
+            return Some(tree.state.downcast_mut());
+        }
+
+        tree.children.iter_mut().find_map(input_state)
+    }
+
+    #[test]
+    fn validation_changes_preserve_input_focus_and_selection() {
+        let mut binding = ValidatedBinding::new(12_u32, |raw| raw.parse::<u32>());
+        let build_input = |binding: &ValidatedBinding<u32, std::num::ParseIntError>| {
+            int_input(
+                binding,
+                "Number",
+                "Enter a number",
+                |value| ControlsMessage::PreviewSizeChanged(value).into(),
+                true,
+            )
+        };
+
+        let mut tree = Tree::new(build_input(&binding).as_widget());
+        let state = input_state(&mut tree).expect("input state");
+        state.focus();
+        state.select_range(0, 1);
+        let selection = state.cursor();
+
+        for raw in ["12x", "12", "12x", "", "12", "12x", "   ", "12"] {
+            let _ = binding.update(raw);
+            tree.diff(build_input(&binding).as_widget());
+
+            let state = input_state(&mut tree).expect("input state after validation");
+            assert!(state.is_focused(), "focus lost for {raw:?}");
+            assert_eq!(state.cursor(), selection, "selection lost for {raw:?}");
+        }
+    }
 }
