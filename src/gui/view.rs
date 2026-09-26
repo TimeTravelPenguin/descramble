@@ -8,7 +8,7 @@ use iced::{
     },
 };
 
-use crate::gui::controls_state::ValidatedBinding;
+use crate::gui::{app::ControlsMessage, controls_state::ValidatedBinding};
 
 use super::app::{App, Message, Status};
 use super::viewer::ImageKind;
@@ -98,7 +98,7 @@ fn file_input_row(app: &App) -> Element<'_, Message> {
     let mut run = button("Run experiment").padding([10, 18]);
 
     if !app.is_running() {
-        input = input.on_input(Message::InputChanged);
+        input = input.on_input(|input| ControlsMessage::InputChanged(input).into());
         open = open.on_press(Message::OpenFileDialog);
 
         if !app.controls.input_path.trim().is_empty()
@@ -117,7 +117,7 @@ fn algorithm_config_row(app: &App) -> Element<'_, Message> {
         &app.controls.preview_size,
         "Maximum height/width:",
         "Enter a number of pixels:",
-        Message::PreviewSizeChanged,
+        |m| ControlsMessage::PreviewSizeChanged(m).into(),
         !app.is_running(),
     );
 
@@ -125,14 +125,41 @@ fn algorithm_config_row(app: &App) -> Element<'_, Message> {
         &app.controls.rng_seed,
         "Random seed:",
         "Enter a number",
-        Message::RngSeedChanged,
+        |m| ControlsMessage::RngSeedChanged(m).into(),
         !app.is_running(),
     );
 
-    column![preview_size, rng_seed]
-        .width(300)
-        .spacing(12)
-        .into()
+    let generations = int_input(
+        &app.controls.generations,
+        "Generations:",
+        "Enter a number",
+        |m| ControlsMessage::GenerationsChanged(m).into(),
+        !app.is_running(),
+    );
+
+    let population_size = int_input(
+        &app.controls.population_size,
+        "Population size:",
+        "Enter a number",
+        |m| ControlsMessage::PopulationSizeChanged(m).into(),
+        !app.is_running(),
+    );
+
+    let local_passes = int_input(
+        &app.controls.local_passes,
+        "Local improvement passes:",
+        "Enter a number",
+        |m| ControlsMessage::LocalPassesChanged(m).into(),
+        !app.is_running(),
+    );
+
+    row![
+        column![preview_size, rng_seed].width(300).spacing(12),
+        column![generations, population_size].width(300).spacing(12),
+        column![local_passes].width(300).spacing(12),
+    ]
+    .spacing(24)
+    .into()
 }
 
 fn int_input<'a, T, E>(

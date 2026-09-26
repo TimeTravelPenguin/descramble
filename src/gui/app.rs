@@ -1,7 +1,9 @@
+use std::str::FromStr;
 use std::{path::PathBuf, sync::Arc};
 
 use iced::{Subscription, Task, keyboard, widget::image::Handle};
 use image::RgbaImage;
+use num::PrimInt;
 use tracing::info;
 
 use crate::{
@@ -12,6 +14,10 @@ use super::viewer::{self, ImageKind, Viewer};
 use super::worker::{self, ExperimentEvent};
 
 const INITIAL_PREVIEW_SIZE: u32 = 256;
+const INITIAL_RNG_SEED: u64 = 42;
+const INITIAL_GENERATIONS: usize = 1000;
+const INITIAL_POPULATION: usize = 100;
+const INITIAL_LOCAL_PASSES: usize = 10;
 
 pub(super) struct App {
     pub controls: AppControlsState,
@@ -41,34 +47,55 @@ pub(super) struct AppControlsState {
     pub input_path: String,
     pub preview_size: ValidatedBinding<u32, String>,
     pub rng_seed: ValidatedBinding<u64, String>,
+    pub generations: ValidatedBinding<usize, String>,
+    pub population_size: ValidatedBinding<usize, String>,
+    pub local_passes: ValidatedBinding<usize, String>,
 }
 
 impl Default for AppControlsState {
     fn default() -> Self {
         Self {
             input_path: "images/penguin.jpg".into(),
-            preview_size: ValidatedBinding::new(INITIAL_PREVIEW_SIZE, validate_preview_size),
+            preview_size: ValidatedBinding::new(INITIAL_PREVIEW_SIZE, validate_integer),
             rng_seed: ValidatedBinding::new(SolverConfig::default().seed, |value| {
                 value
                     .parse()
                     .map_err(|_| "Seed must be an unsigned integer".into())
             }),
+            generations: ValidatedBinding::new(INITIAL_GENERATIONS, validate_integer),
+            population_size: ValidatedBinding::new(INITIAL_POPULATION, validate_integer),
+            local_passes: ValidatedBinding::new(INITIAL_LOCAL_PASSES, validate_integer),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub(super) enum Message {
-    InputChanged(String),
     OpenFileDialog,
     FileDialogResult(Option<PathBuf>),
     RunExperiment,
     ExperimentProgress(f32),
     ExperimentFinished(Result<Arc<ExperimentRun>, String>),
+    OpenImage(ImageKind),
+    Controls(ControlsMessage),
+    Viewer(viewer::Message),
+}
+
+#[allow(clippy::enum_variant_names)]
+#[derive(Debug, Clone)]
+pub(super) enum ControlsMessage {
+    InputChanged(String),
     PreviewSizeChanged(String),
     RngSeedChanged(String),
-    OpenImage(ImageKind),
-    Viewer(viewer::Message),
+    GenerationsChanged(String),
+    PopulationSizeChanged(String),
+    LocalPassesChanged(String),
+}
+
+impl From<ControlsMessage> for Message {
+    fn from(message: ControlsMessage) -> Self {
+        Message::Controls(message)
+    }
 }
 
 pub(super) enum Status {
@@ -160,15 +187,6 @@ impl App {
                 }
             }
 
-            Message::InputChanged(path) if !self.is_running() => {
-                self.controls.input_path = path;
-                self.status = Status::Ready;
-                self.preview = None;
-                self.progress = 0.0;
-                self.viewer = None;
-                self.viewer_open = false;
-            }
-
             Message::OpenFileDialog if !self.is_running() => {
                 info!("Opening file dialog");
                 return iced::Task::perform(
@@ -254,36 +272,81 @@ impl App {
                 }
             },
 
-            Message::PreviewSizeChanged(size) if !self.is_running() => {
-                self.controls.preview_size.update(&size).ok();
+            Message::Controls(message) if !self.is_running() => {
+                return self.update_controls(message);
             }
 
-            Message::RngSeedChanged(seed) if !self.is_running() => {
-                if let Ok(seed) = self.controls.rng_seed.update(&seed) {
-                    self.config.seed = seed;
-                }
-            }
-
-            Message::InputChanged(_)
+            Message::Controls(_)
             | Message::RunExperiment
             | Message::ExperimentProgress(_)
             | Message::ExperimentFinished(_)
-            | Message::PreviewSizeChanged(_)
-            | Message::RngSeedChanged(_)
             | Message::OpenFileDialog
             | Message::FileDialogResult(_) => {}
         }
 
         Task::none()
     }
+
+    fn update_controls(&mut self, message: ControlsMessage) -> Task<Message> {
+        match message {
+            ControlsMessage::InputChanged(path) if !self.is_running() => {
+                self.controls.input_path = path;
+                self.status = Status::Ready;
+                self.preview = None;
+                self.progress = 0.0;
+                self.viewer = None;
+                self.viewer_open = false;
+            }
+
+            ControlsMessage::PreviewSizeChanged(size) if !self.is_running() => {
+                self.controls.preview_size.update(&size).ok();
+            }
+
+            ControlsMessage::RngSeedChanged(seed) if !self.is_running() => {
+                if let Ok(seed) = self.controls.rng_seed.update(&seed) {
+                    self.config.seed = seed;
+                }
+            }
+
+            ControlsMessage::GenerationsChanged(gens) if !self.is_running() => {
+                if let Ok(gens) = self.controls.generations.update(&gens) {
+                    self.config.generations = gens;
+                }
+            }
+
+            ControlsMessage::PopulationSizeChanged(pop) if !self.is_running() => {
+                if let Ok(pop) = self.controls.population_size.update(&pop) {
+                    self.config.population = pop;
+                }
+            }
+
+            ControlsMessage::LocalPassesChanged(passes) if !self.is_running() => {
+                if let Ok(passes) = self.controls.local_passes.update(&passes) {
+                    self.config.local_passes = passes;
+                }
+            }
+
+            ControlsMessage::InputChanged(_)
+            | ControlsMessage::PreviewSizeChanged(_)
+            | ControlsMessage::RngSeedChanged(_)
+            | ControlsMessage::GenerationsChanged(_)
+            | ControlsMessage::PopulationSizeChanged(_)
+            | ControlsMessage::LocalPassesChanged(_) => {}
+        }
+
+        Task::none()
+    }
 }
 
-fn validate_preview_size(value: &str) -> Result<u32, String> {
+fn validate_integer<T>(value: &str) -> Result<T, String>
+where
+    T: PrimInt + FromStr,
+{
     let size = value
-        .parse::<u32>()
+        .parse::<T>()
         .map_err(|_| "Preview size must be a positive integer")?;
 
-    if size == 0 {
+    if size <= T::zero() {
         return Err("Preview size must be greater than zero".into());
     }
 
@@ -292,7 +355,7 @@ fn validate_preview_size(value: &str) -> Result<u32, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, AppControlsState, Message, Status};
+    use super::{App, AppControlsState, ControlsMessage, Message, Status};
 
     #[test]
     fn running_job_rejects_duplicate_requests_and_input_changes() {
@@ -302,9 +365,9 @@ mod tests {
         assert!(app.is_running());
 
         let _duplicate = app.update(Message::RunExperiment);
-        let _edit = app.update(Message::InputChanged("different.png".into()));
-        let _size = app.update(Message::PreviewSizeChanged("100".into()));
-        let _seed = app.update(Message::RngSeedChanged("123".into()));
+        let _edit = app.update(ControlsMessage::InputChanged("different.png".into()).into());
+        let _size = app.update(ControlsMessage::PreviewSizeChanged("100".into()).into());
+        let _seed = app.update(ControlsMessage::RngSeedChanged("123".into()).into());
 
         assert!(app.is_running());
         assert_eq!(app.controls.input_path, "images/penguin.jpg");
@@ -325,7 +388,7 @@ mod tests {
         let _task = app.update(Message::RunExperiment);
         assert!(matches!(app.status, Status::Failed(_)));
 
-        let _edit = app.update(Message::InputChanged("input.png".into()));
+        let _edit = app.update(ControlsMessage::InputChanged("input.png".into()).into());
         let _task = app.update(Message::RunExperiment);
         assert!(app.is_running());
 
@@ -363,16 +426,16 @@ mod tests {
     #[test]
     fn invalid_settings_block_start_and_zero_is_a_valid_seed() {
         let mut app = App::default();
-        let _invalid_size = app.update(Message::PreviewSizeChanged("0".into()));
+        let _invalid_size = app.update(ControlsMessage::PreviewSizeChanged("0".into()).into());
         let _start = app.update(Message::RunExperiment);
         assert!(!app.is_running());
 
-        let _size = app.update(Message::PreviewSizeChanged("128".into()));
-        let _invalid_seed = app.update(Message::RngSeedChanged("invalid".into()));
+        let _size = app.update(ControlsMessage::PreviewSizeChanged("128".into()).into());
+        let _invalid_seed = app.update(ControlsMessage::RngSeedChanged("invalid".into()).into());
         let _start = app.update(Message::RunExperiment);
         assert!(!app.is_running());
 
-        let _zero_seed = app.update(Message::RngSeedChanged("0".into()));
+        let _zero_seed = app.update(ControlsMessage::RngSeedChanged("0".into()).into());
         let _start = app.update(Message::RunExperiment);
         assert!(app.is_running());
         assert_eq!(app.config.seed, 0);
@@ -400,7 +463,7 @@ mod tests {
         let _open = app.update(Message::OpenImage(ImageKind::Original));
         assert!(app.viewer().is_some());
 
-        let _new_input = app.update(Message::InputChanged("next.png".into()));
+        let _new_input = app.update(ControlsMessage::InputChanged("next.png".into()).into());
         assert!(app.viewer().is_none());
         assert!(app.viewer.is_none());
         assert!(app.preview.is_none());
