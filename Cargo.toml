@@ -1,6 +1,6 @@
 [package]
 name = "descramble"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 default-run = "descramble"
 
@@ -14,7 +14,7 @@ clap = { version = "4.6.7", features = ["derive", "wrap_help"] }
 color-eyre = "0.6.5"
 iced = {
   version = "0.14.0",
-  features = ["fira-sans", "image-without-codecs", "tokio", "canvas"],
+  features = ["canvas", "fira-sans", "image-without-codecs", "tokio"],
   optional = true,
 }
 # Explicit image allocation is not re-exported by Iced's image-without-codecs feature.
@@ -29,7 +29,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.151"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "macros"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
