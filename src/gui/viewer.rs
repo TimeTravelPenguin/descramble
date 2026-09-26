@@ -4,7 +4,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use iced::{
     Element, Fill, Task,
-    widget::{button, column, container, image::Handle, row, slider, text},
+    widget::{button, column, container, image::Handle, row, text},
 };
 use iced_runtime::image::{Allocation, Error as ImageError, allocate};
 use image::RgbaImage;
@@ -13,7 +13,7 @@ use crate::application::ExperimentRun;
 
 use super::{
     comparison::{self, Comparison, Transform},
-    comparison_canvas, image_export,
+    comparison_canvas, image_export, keyboard_control,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -395,35 +395,34 @@ impl Viewer {
             Mode::Wipe,
             Mode::Difference,
         ] {
-            modes = modes.push(
-                button(text(mode.label()).size(14))
-                    .on_press(Message::SelectMode(mode))
-                    .style(if self.mode == mode {
-                        button::primary
-                    } else {
-                        button::secondary
-                    }),
-            );
+            modes = modes.push(keyboard_control::button(
+                button(text(mode.label()).size(14)).style(if self.mode == mode {
+                    button::primary
+                } else {
+                    button::secondary
+                }),
+                Some(Message::SelectMode(mode)),
+            ));
         }
 
         let controls: Element<'_, Message> = match self.mode {
             Mode::Blend => row![
                 text("Original"),
-                slider(0.0..=1.0, self.opacity, Message::BlendChanged).step(0.01_f32),
+                keyboard_control::slider(0.0..=1.0, self.opacity, 0.01, Message::BlendChanged,),
                 text(format!("Result opacity: {:.0}%", self.opacity * 100.0)),
             ]
             .spacing(12)
             .into(),
             Mode::Wipe => row![
                 text("Original on left"),
-                slider(0.0..=1.0, self.divider, Message::DividerChanged).step(0.001_f32),
+                keyboard_control::slider(0.0..=1.0, self.divider, 0.001, Message::DividerChanged,),
                 text("Result on right"),
             ]
             .spacing(12)
             .into(),
             Mode::Difference => row![
                 text("Difference gain"),
-                slider(1.0..=16.0, self.gain, Message::GainChanged).step(1.0_f32),
+                keyboard_control::slider(1.0..=16.0, self.gain, 1.0, Message::GainChanged,),
                 text(format!(
                     "{:.0}× · black = equal · magenta = missing area",
                     self.gain
@@ -436,11 +435,23 @@ impl Viewer {
 
         let alignment = row![
             text("Align result:"),
-            button("Rotate left").on_press(Message::Transform(Transform::RotateLeft)),
-            button("Rotate right").on_press(Message::Transform(Transform::RotateRight)),
-            button("Flip horizontal").on_press(Message::Transform(Transform::FlipHorizontal)),
-            button("Flip vertical").on_press(Message::Transform(Transform::FlipVertical)),
-            button("Reset alignment").on_press(Message::ResetAlignment),
+            keyboard_control::button(
+                button("Rotate left"),
+                Some(Message::Transform(Transform::RotateLeft)),
+            ),
+            keyboard_control::button(
+                button("Rotate right"),
+                Some(Message::Transform(Transform::RotateRight)),
+            ),
+            keyboard_control::button(
+                button("Flip horizontal"),
+                Some(Message::Transform(Transform::FlipHorizontal)),
+            ),
+            keyboard_control::button(
+                button("Flip vertical"),
+                Some(Message::Transform(Transform::FlipVertical)),
+            ),
+            keyboard_control::button(button("Reset alignment"), Some(Message::ResetAlignment)),
         ]
         .spacing(8)
         .wrap();
@@ -505,22 +516,22 @@ impl Viewer {
                     text(format!("Image viewer · {}", self.mode.label()))
                         .size(24)
                         .width(Fill),
-                    button(if self.saving.is_some() {
-                        "Saving…"
-                    } else {
-                        "Save…"
-                    })
-                    .on_press_maybe(
+                    keyboard_control::button(
+                        button(if self.saving.is_some() {
+                            "Saving…"
+                        } else {
+                            "Save…"
+                        }),
                         (self.presented.is_some() && self.saving.is_none())
                             .then_some(Message::Save),
                     ),
-                    button("Back (Esc)").on_press(Message::Close),
+                    keyboard_control::button(button("Back (Esc)"), Some(Message::Close)),
                 ]
                 .spacing(12),
                 row![
                     modes.wrap(),
-                    button("Swap (Space)").on_press(Message::Swap),
-                    button("Fit").on_press(Message::Fit)
+                    keyboard_control::button(button("Swap (Space)"), Some(Message::Swap)),
+                    keyboard_control::button(button("Fit"), Some(Message::Fit))
                 ]
                 .spacing(12),
                 container(controls).width(Fill).center_y(28),

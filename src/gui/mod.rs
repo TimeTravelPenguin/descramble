@@ -5,6 +5,7 @@ mod comparison;
 mod comparison_canvas;
 mod controls_state;
 mod image_export;
+mod keyboard_control;
 mod view;
 mod viewer;
 mod worker;

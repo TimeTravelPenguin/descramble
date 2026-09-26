@@ -1,7 +1,11 @@
 use std::str::FromStr;
 use std::{path::PathBuf, sync::Arc};
 
-use iced::{Subscription, Task, keyboard, widget::image::Handle};
+use iced::{
+    Event, Subscription, Task, event, keyboard,
+    widget::{image::Handle, operation},
+    window,
+};
 use image::RgbaImage;
 use num::PrimInt;
 use tracing::info;
@@ -71,6 +75,9 @@ impl Default for AppControlsState {
 
 #[derive(Debug, Clone)]
 pub(super) enum Message {
+    CloseWindow(window::Id),
+    FocusNext,
+    FocusPrevious,
     OpenFileDialog,
     FileDialogResult(Option<PathBuf>),
     RunExperiment,
@@ -133,22 +140,26 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        if !self.viewer_open {
-            return Subscription::none();
-        }
+        let shortcuts = event::listen_with(keyboard_shortcut);
 
-        keyboard::listen().filter_map(|event| match event {
-            keyboard::Event::KeyPressed {
-                key: keyboard::Key::Named(keyboard::key::Named::Escape),
-                ..
-            } => Some(Message::Viewer(viewer::Message::Close)),
-            keyboard::Event::KeyPressed {
-                key: keyboard::Key::Named(keyboard::key::Named::Space),
-                repeat: false,
-                ..
-            } => Some(Message::Viewer(viewer::Message::Swap)),
-            _ => None,
-        })
+        let viewer_shortcuts = if self.viewer_open {
+            keyboard::listen().filter_map(|event| match event {
+                keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                    ..
+                } => Some(Message::Viewer(viewer::Message::Close)),
+                keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::Space),
+                    repeat: false,
+                    ..
+                } => Some(Message::Viewer(viewer::Message::Swap)),
+                _ => None,
+            })
+        } else {
+            Subscription::none()
+        };
+
+        Subscription::batch([shortcuts, viewer_shortcuts])
     }
 
     pub fn is_running(&self) -> bool {
@@ -157,6 +168,10 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::CloseWindow(window) => return window::close(window),
+            Message::FocusNext if !self.is_running() => return operation::focus_next(),
+            Message::FocusPrevious if !self.is_running() => return operation::focus_previous(),
+
             Message::OpenImage(image) => {
                 if let Some(preview) = &self.preview {
                     if let Some(viewer) = &mut self.viewer {
@@ -276,7 +291,9 @@ impl App {
                 return self.update_controls(message);
             }
 
-            Message::Controls(_)
+            Message::FocusNext
+            | Message::FocusPrevious
+            | Message::Controls(_)
             | Message::RunExperiment
             | Message::ExperimentProgress(_)
             | Message::ExperimentFinished(_)
@@ -338,6 +355,39 @@ impl App {
     }
 }
 
+fn keyboard_shortcut(event: Event, status: event::Status, window: window::Id) -> Option<Message> {
+    let Event::Keyboard(keyboard::Event::KeyPressed {
+        key,
+        modifiers,
+        repeat,
+        ..
+    }) = event
+    else {
+        return None;
+    };
+
+    match key.as_ref() {
+        keyboard::Key::Character(character)
+            if character.eq_ignore_ascii_case("w")
+                && modifiers == keyboard::Modifiers::COMMAND
+                && !repeat =>
+        {
+            Some(Message::CloseWindow(window))
+        }
+        keyboard::Key::Named(keyboard::key::Named::Tab)
+            if status == event::Status::Ignored
+                && (modifiers - keyboard::Modifiers::SHIFT).is_empty() =>
+        {
+            Some(if modifiers.shift() {
+                Message::FocusPrevious
+            } else {
+                Message::FocusNext
+            })
+        }
+        _ => None,
+    }
+}
+
 fn validate_integer<T>(value: &str) -> Result<T, String>
 where
     T: PrimInt + FromStr,
@@ -355,7 +405,107 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{App, AppControlsState, ControlsMessage, Message, Status};
+    use iced::{Event, event, keyboard, window};
+
+    use super::{App, AppControlsState, ControlsMessage, Message, Status, keyboard_shortcut};
+
+    fn key_press(key: keyboard::Key, modifiers: keyboard::Modifiers, repeat: bool) -> Event {
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            modified_key: key.clone(),
+            key,
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat,
+        })
+    }
+
+    #[test]
+    fn command_w_closes_even_when_a_control_captures_the_key() {
+        let window = window::Id::unique();
+
+        for status in [event::Status::Ignored, event::Status::Captured] {
+            let event = key_press(
+                keyboard::Key::Character("w".into()),
+                keyboard::Modifiers::COMMAND,
+                false,
+            );
+            assert!(matches!(
+                keyboard_shortcut(event, status, window),
+                Some(Message::CloseWindow(target)) if target == window
+            ));
+        }
+
+        for (modifiers, repeat) in [
+            (keyboard::Modifiers::empty(), false),
+            (
+                keyboard::Modifiers::COMMAND | keyboard::Modifiers::ALT,
+                false,
+            ),
+            (keyboard::Modifiers::COMMAND, true),
+        ] {
+            let event = key_press(keyboard::Key::Character("w".into()), modifiers, repeat);
+            assert!(keyboard_shortcut(event, event::Status::Ignored, window).is_none());
+        }
+    }
+
+    #[test]
+    fn tab_traversal_respects_shift_modifiers_and_captured_events() {
+        let window = window::Id::unique();
+        let tab = keyboard::Key::Named(keyboard::key::Named::Tab);
+        let forward = key_press(tab.clone(), keyboard::Modifiers::empty(), false);
+        let backward = key_press(tab.clone(), keyboard::Modifiers::SHIFT, false);
+
+        assert!(matches!(
+            keyboard_shortcut(forward.clone(), event::Status::Ignored, window),
+            Some(Message::FocusNext)
+        ));
+        assert!(matches!(
+            keyboard_shortcut(backward, event::Status::Ignored, window),
+            Some(Message::FocusPrevious)
+        ));
+        assert!(keyboard_shortcut(forward, event::Status::Captured, window).is_none());
+
+        for modifiers in [
+            keyboard::Modifiers::ALT,
+            keyboard::Modifiers::CTRL,
+            keyboard::Modifiers::LOGO,
+        ] {
+            let event = key_press(tab.clone(), modifiers, false);
+            assert!(keyboard_shortcut(event, event::Status::Ignored, window).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn close_shortcut_closes_the_window_from_form_viewer_and_running_states() {
+        use iced::futures::StreamExt;
+
+        let window = window::Id::unique();
+
+        for (viewer_open, status) in [
+            (false, Status::Ready),
+            (true, Status::Ready),
+            (false, Status::Running),
+        ] {
+            let mut app = App {
+                viewer_open,
+                status,
+                ..App::default()
+            };
+
+            let task = app.update(Message::CloseWindow(window));
+            let mut actions = iced_runtime::task::into_stream(task).expect("close task");
+
+            assert!(matches!(
+                actions.next().await,
+                Some(iced_runtime::Action::Window(iced_runtime::window::Action::Close(target)))
+                    if target == window
+            ));
+        }
+    }
 
     #[test]
     fn running_job_rejects_duplicate_requests_and_input_changes() {

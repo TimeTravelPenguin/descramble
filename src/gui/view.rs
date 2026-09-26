@@ -11,6 +11,7 @@ use iced::{
 use crate::gui::{app::ControlsMessage, controls_state::ValidatedBinding};
 
 use super::app::{App, Message, Status};
+use super::keyboard_control;
 use super::viewer::ImageKind;
 
 pub(super) fn view(app: &App) -> Element<'_, Message> {
@@ -94,20 +95,25 @@ fn attach_label<'a>(label: &'a str, input: Element<'a, Message>) -> Element<'a, 
 
 fn file_input_row(app: &App) -> Element<'_, Message> {
     let mut input = text_input("Path to a PNG or JPEG image", &app.controls.input_path).padding(10);
-    let mut open = button("Browse…").padding([10, 18]);
-    let mut run = button("Run experiment").padding([10, 18]);
 
     if !app.is_running() {
         input = input.on_input(|input| ControlsMessage::InputChanged(input).into());
-        open = open.on_press(Message::OpenFileDialog);
-
-        if !app.controls.input_path.trim().is_empty()
-            && app.controls.preview_size.is_valid()
-            && app.controls.rng_seed.is_valid()
-        {
-            run = run.on_press(Message::RunExperiment);
-        }
     }
+
+    let open = keyboard_control::button(
+        button("Browse…").padding([10, 18]),
+        (!app.is_running()).then_some(Message::OpenFileDialog),
+    );
+
+    let can_run = !app.is_running()
+        && !app.controls.input_path.trim().is_empty()
+        && app.controls.preview_size.is_valid()
+        && app.controls.rng_seed.is_valid();
+
+    let run = keyboard_control::button(
+        button("Run experiment").padding([10, 18]),
+        can_run.then_some(Message::RunExperiment),
+    );
 
     row![input, open, run].spacing(12).into()
 }
@@ -226,22 +232,23 @@ where
 }
 
 fn image_card<'a>(title: &'a str, handle: &image::Handle, kind: ImageKind) -> Element<'a, Message> {
-    button(
-        column![
-            text(title).size(18),
-            image(handle.clone())
-                .width(Fill)
-                .height(256)
-                .content_fit(ContentFit::Contain),
-            text("Click to enlarge and compare").size(13),
-        ]
-        .spacing(12),
+    keyboard_control::button(
+        button(
+            column![
+                text(title).size(18),
+                image(handle.clone())
+                    .width(Fill)
+                    .height(256)
+                    .content_fit(ContentFit::Contain),
+                text("Click to enlarge and compare").size(13),
+            ]
+            .spacing(12),
+        )
+        .padding(16)
+        .width(Fill)
+        .style(button::secondary),
+        Some(Message::OpenImage(kind)),
     )
-    .padding(16)
-    .width(Fill)
-    .style(button::secondary)
-    .on_press(Message::OpenImage(kind))
-    .into()
 }
 
 #[cfg(test)]

@@ -57,6 +57,11 @@ distance computation, and population initialization are not timed, so the bar ca
 during those stages. The completed result arrives separately from progress updates.
 Use `--no-default-features` for CLI-only builds.
 
+Use **Tab** and **Shift+Tab** to move between inputs and enabled controls.
+Press **Enter** or **Space** to activate a focused button, and use the arrow keys
+to adjust a focused slider. **Command+W** closes the app on macOS (**Ctrl+W** on
+other platforms).
+
 The public solver and application functions remain synchronous and take no progress
 callback. Internally, `with_seeded_search` prepares the engine and lets the GUI attach
 an observer before running it, all within the same thread-local seed scope. The GUI's
